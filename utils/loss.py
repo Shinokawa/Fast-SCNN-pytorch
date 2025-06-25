@@ -1,11 +1,103 @@
 """Custom losses."""
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 from torch.autograd import Variable
 
-__all__ = ['MixSoftmaxCrossEntropyLoss', 'MixSoftmaxCrossEntropyOHEMLoss']
+__all__ = ['MixSoftmaxCrossEntropyLoss', 'MixSoftmaxCrossEntropyOHEMLoss', 'DiceLoss', 'MixDiceLoss']
+
+
+class DiceLoss(nn.Module):
+    """Dice Loss for binary segmentation tasks like lane detection."""
+    
+    def __init__(self, smooth=1e-6, **kwargs):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+    
+    def forward(self, pred, target):
+        """
+        Args:
+            pred: [N, C, H, W] - predicted logits
+            target: [N, H, W] - ground truth labels
+        """
+        if pred.dim() == 4 and pred.size(1) > 1:
+            # Convert to probabilities and take the positive class
+            pred = F.softmax(pred, dim=1)[:, 1, :, :]  # Take class 1 (lane)
+        elif pred.dim() == 4 and pred.size(1) == 1:
+            pred = torch.sigmoid(pred.squeeze(1))
+        
+        # Flatten
+        pred = pred.contiguous().view(-1)
+        target = target.contiguous().view(-1).float()
+        
+        # Dice coefficient
+        intersection = (pred * target).sum()
+        dice = (2. * intersection + self.smooth) / (pred.sum() + target.sum() + self.smooth)
+        
+        return 1 - dice
+
+
+class MixDiceLoss(nn.Module):
+    """Mixed Dice Loss with auxiliary loss support."""
+    
+    def __init__(self, aux=True, aux_weight=0.4, smooth=1e-6, **kwargs):
+        super(MixDiceLoss, self).__init__()
+        self.aux = aux
+        self.aux_weight = aux_weight
+        self.dice_loss = DiceLoss(smooth=smooth)
+    
+    def forward(self, preds, target):
+        """
+        Args:
+            preds: tuple of predictions (main_pred, aux_pred) or single prediction
+            target: ground truth labels
+        """
+        if isinstance(preds, tuple):
+            main_pred = preds[0]
+            loss = self.dice_loss(main_pred, target)
+            
+            if self.aux and len(preds) > 1:
+                aux_pred = preds[1]
+                aux_loss = self.dice_loss(aux_pred, target)
+                loss += self.aux_weight * aux_loss
+                
+            return loss
+        else:
+            return self.dice_loss(preds, target)
+
+
+class FocalDiceLoss(nn.Module):
+    """Combined Focal + Dice Loss for handling class imbalance."""
+    
+    def __init__(self, alpha=0.5, gamma=2.0, dice_weight=0.5, smooth=1e-6, **kwargs):
+        super(FocalDiceLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.dice_weight = dice_weight
+        self.dice_loss = DiceLoss(smooth=smooth)
+    
+    def focal_loss(self, pred, target):
+        """Focal loss component."""
+        if pred.dim() == 4 and pred.size(1) > 1:
+            # Cross entropy for multi-class
+            ce_loss = F.cross_entropy(pred, target, reduction='none')
+            pt = torch.exp(-ce_loss)
+        else:
+            # Binary case
+            pred_prob = torch.sigmoid(pred.squeeze(1))
+            target_float = target.float()
+            ce_loss = F.binary_cross_entropy(pred_prob, target_float, reduction='none')
+            pt = torch.where(target_float == 1, pred_prob, 1 - pred_prob)
+        
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        return focal_loss.mean()
+    
+    def forward(self, pred, target):
+        focal = self.focal_loss(pred, target)
+        dice = self.dice_loss(pred, target)
+        return (1 - self.dice_weight) * focal + self.dice_weight * dice
 
 
 class MixSoftmaxCrossEntropyLoss(nn.CrossEntropyLoss):

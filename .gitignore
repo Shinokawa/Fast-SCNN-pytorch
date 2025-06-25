@@ -110,6 +110,7 @@ venv.bak/
 
 # datasets
 datasets
+manideep1108/
 
 # pretraind model
 weights/

@@ -205,7 +205,11 @@ class FeatureFusionModule(nn.Module):
         self.relu = nn.ReLU(True)
 
     def forward(self, higher_res_feature, lower_res_feature):
-        lower_res_feature = F.interpolate(lower_res_feature, scale_factor=4, mode='bilinear', align_corners=True)
+        # Get the size of higher resolution feature for interpolation target
+        target_size = higher_res_feature.size()[2:]
+        
+        # Upsample lower resolution feature to match higher resolution feature size
+        lower_res_feature = F.interpolate(lower_res_feature, size=target_size, mode='bilinear', align_corners=True)
         lower_res_feature = self.dwconv(lower_res_feature)
         lower_res_feature = self.conv_lower_res(lower_res_feature)
 
@@ -240,6 +244,7 @@ def get_fast_scnn(dataset='citys', pretrained=False, root='./weights', map_cpu=F
         'ade20k': 'ade',
         'coco': 'coco',
         'citys': 'citys',
+        'tusimple': 'tusimple',
     }
     from data_loader import datasets
     model = FastSCNN(datasets[dataset].NUM_CLASS, **kwargs)

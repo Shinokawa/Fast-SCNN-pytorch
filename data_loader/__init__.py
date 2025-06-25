@@ -1,7 +1,9 @@
 from .cityscapes import CitySegmentation
+from .tusimple import TUSimpleSegmentation
 
 datasets = {
     'citys': CitySegmentation,
+    'tusimple': TUSimpleSegmentation,
 }
 
 
