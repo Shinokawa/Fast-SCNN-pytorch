@@ -3,12 +3,13 @@ TUSimple Lane Segmentation - Test Specific Images (20.jpg)
 预测每个文件夹中的20.jpg并与真实mask对比分析 - 随机选择50张
 """
 import os
+os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 import time
 import random
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from torchvision import transforms
 import cv2
 from PIL import Image
@@ -117,7 +118,7 @@ class TUSimpleSpecificTester:
             image_input = image_tensor.to(self.device)
             
             start_time = time.time()
-            with autocast():
+            with autocast(device_type=self.device.type):
                 outputs = self.model(image_input)
             inference_time = time.time() - start_time
             
