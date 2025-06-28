@@ -413,6 +413,19 @@ def postprocess_matched_resolution(output_tensor, original_width, original_heigh
     vis_mask = (pred_mask * 255).astype(np.uint8)
     return cv2.resize(vis_mask, (original_width, original_height), interpolation=cv2.INTER_NEAREST)
 
+def create_colored_mask(mask):
+    """
+    将灰度mask转换为彩色可视化mask
+    """
+    colored_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+    
+    # 车道线显示为绿色
+    lane_pixels = mask > 0
+    colored_mask[lane_pixels] = [0, 255, 0]  # 绿色 (BGR格式)
+    
+    # 背景保持黑色
+    return colored_mask
+
 # --- 摄像头抓取线程 ---
 def camera_capture_thread():
     print("正在打开摄像头...")
@@ -544,6 +557,7 @@ def inference_thread():
         result_data = {
             "frame": frame.copy(),
             "mask": lane_mask,
+            "colored_mask": create_colored_mask(lane_mask),  # 新增彩色mask
             "left_curve": left_curve,
             "right_curve": right_curve,
             "vis_points": vis_points if vis_points else [],  # 确保不为None
@@ -611,43 +625,57 @@ def system_monitor_loop():
                  stats_data["npu_mem"] = "Error"
         time.sleep(1)
 
-# --- 增强的HTML模板 ---
+# --- 增强的HTML模板 (双视角显示) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>🚗 鲁棒智能小车控制系统</title>
+    <title>🚗 智能小车控制系统 (双视角监控)</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f7f6; color: #333; }
-        .container { max-width: 1400px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
-        h1 { text-align: center; color: #1a73e8; }
-        .main-content { display: flex; flex-wrap: wrap; gap: 20px; }
-        .video-container { flex: 3; min-width: 600px; }
-        #videoStream { width: 100%; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); background-color: #eee; }
-        .stats-container { flex: 1; min-width: 300px; background-color: #f8f9fa; padding: 20px; border-radius: 8px; }
+        .container { max-width: 1600px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h1 { text-align: center; color: #1a73e8; margin-bottom: 30px; }
+        .main-content { display: grid; grid-template-columns: 1fr 1fr 320px; gap: 20px; }
+        .video-section { display: flex; flex-direction: column; }
+        .video-container { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .video-title { font-size: 16px; font-weight: 600; color: #3c4043; margin-bottom: 10px; text-align: center; }
+        .video-container img { width: 100%; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); background-color: #eee; }
+        .stats-container { background-color: #f8f9fa; padding: 20px; border-radius: 8px; }
         .stats-container h2 { margin-top: 0; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; color: #3c4043; }
-        .stat-grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
-        .stat-card { background-color: #fff; padding: 15px; border-radius: 5px; border-left: 5px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; }
+        .stat-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+        .stat-card { background-color: #fff; padding: 12px; border-radius: 5px; border-left: 5px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; }
         .stat-card.control { border-left-color: #ff6b35; }
         .stat-card.npu { border-left-color: #34a853; }
         .stat-card.cpu { border-left-color: #fbbc05; }
         .stat-card.e2e { border-left-color: #ea4335; }
         .stat-card.status { border-left-color: #9c27b0; }
-        .stat-label { font-size: 14px; color: #5f6368; }
-        .stat-value { font-size: 18px; font-weight: 600; color: #202124; }
+        .stat-label { font-size: 13px; color: #5f6368; }
+        .stat-value { font-size: 16px; font-weight: 600; color: #202124; }
         .control-badge { background: linear-gradient(45deg, #ff6b35, #f7931e); color: white; padding: 5px 10px; border-radius: 15px; font-size: 12px; font-weight: bold; margin-left: 10px; }
         .status-indicator { width: 12px; height: 12px; border-radius: 50%; margin-left: 10px; }
         .status-good { background-color: #4caf50; }
         .status-warning { background-color: #ff9800; }
         .status-error { background-color: #f44336; }
+        .view-toggle { display: flex; justify-content: center; gap: 10px; margin-bottom: 15px; }
+        .toggle-btn { padding: 8px 16px; border: 2px solid #1a73e8; border-radius: 20px; background: white; color: #1a73e8; cursor: pointer; transition: all 0.3s; }
+        .toggle-btn.active { background: #1a73e8; color: white; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🚗 鲁棒智能小车控制系统 <span class="control-badge">故障安全设计</span></h1>
+        <h1>🚗 智能小车控制系统 <span class="control-badge">双视角监控</span></h1>
         <div class="main-content">
-            <div class="video-container">
-                <img id="videoStream" src="{{ url_for('video_feed') }}" alt="Live Stream">
+            <div class="video-section">
+                <div class="video-container">
+                    <div class="video-title">📷 原始摄像头 + 控制信息</div>
+                    <img id="videoStream" src="/video_feed" alt="Control View">
+                </div>
+            </div>
+            <div class="video-section">
+                <div class="video-container">
+                    <div class="video-title">🎯 NPU推理结果 (分割Mask)</div>
+                    <img id="maskStream" src="/mask_feed" alt="Mask View">
+                </div>
             </div>
             <div class="stats-container">
                 <h2>📊 系统状态监控</h2>
@@ -770,17 +798,54 @@ def video_feed():
     
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+@app.route("/mask_feed")
+def mask_feed():
+    """新增：提供原始推理mask的视频流"""
+    def generate():
+        while True:
+            try:
+                result = result_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            
+            # 获取彩色mask
+            try:
+                colored_mask = result.get("colored_mask")
+                if colored_mask is None:
+                    # 如果没有彩色mask，创建一个空的黑色图像
+                    colored_mask = np.zeros((480, 640, 3), dtype=np.uint8)
+                
+                # 在mask上添加一些信息文本
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                cv2.putText(colored_mask, "NPU Inference Result", (10, 30), 
+                           font, 0.7, (255, 255, 255), 2)
+                cv2.putText(colored_mask, "Lane Detection Mask", (10, 60), 
+                           font, 0.7, (255, 255, 255), 2)
+                
+                # 编码图像
+                (flag, encodedImage) = cv2.imencode(".jpg", colored_mask)
+                if not flag:
+                    continue
+                    
+                yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
+                      bytearray(encodedImage) + b'\r\n')
+            except Exception as e:
+                print(f"Mask编码错误: {e}")
+                continue
+    
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
 @app.route("/stats")
 def stats():
     with data_lock:
         return jsonify(stats_data)
 
 if __name__ == '__main__':
-    print("🚗 鲁棒智能小车车道线控制系统启动")
+    print("🚗 智能小车车道线控制系统启动 (双视角监控)")
     print("=============================================================")
     print(f"🧠 模型: {MODEL_PATH}")
     print(f"🎯 输入尺寸: {MODEL_WIDTH}x{MODEL_HEIGHT}")
-    print(f"⚡ 安全特性: 故障安全 + 紧急制动 + 异常恢复")
+    print(f"⚡ 新功能: 原始推理结果可视化 + 双视角监控")
     print(f"🔧 PID参数: Kp={CAR_CONTROL['kp']}, Ki={CAR_CONTROL['ki']}, Kd={CAR_CONTROL['kd']}")
     print("=============================================================")
     
@@ -789,5 +854,8 @@ if __name__ == '__main__':
     Thread(target=system_monitor_loop, daemon=True).start()
     
     print("\nWeb服务器已启动。请在浏览器中访问: http://<Your_Atlas_IP>:8000")
-    print("鲁棒控制参数将在终端实时显示...")
+    print("现在可以同时查看：")
+    print("  📷 左侧：原始摄像头 + 控制信息叠加")
+    print("  🎯 右侧：NPU推理的原始分割结果")
+    print("控制参数将在终端实时显示...")
     app.run(host='0.0.0.0', port=8000, threaded=True)
