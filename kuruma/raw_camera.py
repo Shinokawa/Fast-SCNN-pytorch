@@ -39,8 +39,8 @@ def camera_loop():
     cap.set(cv2.CAP_PROP_FOURCC, fourcc)
 
     # 2. 设置期望的分辨率
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
     # 3. 设置期望的帧率
     cap.set(cv2.CAP_PROP_FPS, 30)
