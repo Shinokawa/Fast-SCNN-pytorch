@@ -112,8 +112,6 @@ venv.bak/
 datasets
 manideep1108/
 
-# pretraind model
-weights/
 
 # result
 test_result/

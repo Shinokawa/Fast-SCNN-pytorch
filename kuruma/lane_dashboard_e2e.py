@@ -25,28 +25,28 @@ data_lock = Lock()
 # --- 【关键】可配置常量 ---
 DEVICE_ID = 0
 # 使用您的新模型路径
-MODEL_PATH = "./weights/fast_scnn_480x640_e2e_fp16_input.om" 
-# 模型输入尺寸与摄像头输出完全匹配
+MODEL_PATH = "./weights/fast_scnn_custom_e2e_360x640_fp16_fixed_simp.om" 
+# 模型输入尺寸：高×宽 = 360×640
 MODEL_WIDTH = 640
-MODEL_HEIGHT = 480
+MODEL_HEIGHT = 360
 CAMERA_INDEX = 0
 CAMERA_WIDTH = 640
-CAMERA_HEIGHT = 480
+CAMERA_HEIGHT = 360
 NPU_SMI_PATH = "/usr/local/Ascend/driver/tools/npu-smi"
 
 # ---------------------------------------------------------------------------------
-# --- 🚀🚀🚀 极简预处理 (分辨率匹配) 🚀🚀🚀 ---
+# --- 🚀🚀🚀 完美匹配的预处理 (640×360 = 640×360) 🚀🚀🚀 ---
 # ---------------------------------------------------------------------------------
 
 def preprocess_matched_resolution(img_bgr, dtype=np.float16):
     """
-    当模型输入分辨率与摄像头输出完全匹配时，预处理开销最小化。
-    CPU只负责最基本的数据格式和类型转换。
+    摄像头输出640×360，模型需要640×360，完美匹配！
+    无需任何resize操作，仅格式转换，CPU开销极小。
     """
     # 1. 转换颜色通道 (BGR -> RGB)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     
-    # 2. 转换数据类型 (uint8 -> float16)
+    # 2. 转换数据类型 (uint8 -> float16，保持[0-255]范围)
     img_typed = img_rgb.astype(dtype)
     
     # 3. 转换为CHW格式并添加batch维度
@@ -54,12 +54,13 @@ def preprocess_matched_resolution(img_bgr, dtype=np.float16):
     return np.ascontiguousarray(img_transposed[np.newaxis, :, :, :])
 
 # ---------------------------------------------------------------------------------
-# --- 🚀🚀🚀 极简后处理 (无需裁剪) 🚀🚀🚀 ---
+# --- 🚀🚀🚀 极简后处理 (尺寸完美匹配) 🚀🚀🚀 ---
 # ---------------------------------------------------------------------------------
 
 def postprocess_matched_resolution(output_tensor, original_width, original_height):
     """
-    由于输入和模型尺寸匹配，输出也直接对应原始图像，无需裁剪。
+    由于摄像头输出640×360与模型输入完全匹配，输出也直接对应原始图像。
+    无需任何resize操作，性能最优！
     """
     # 1. Argmax获取分割掩码
     pred_mask = np.argmax(output_tensor, axis=1).squeeze()
@@ -120,8 +121,8 @@ def inference_thread():
     frame_count = 0
     total_times = {"preprocess": 0, "inference": 0, "postprocess": 0, "pipeline": 0}
 
-    print("\n=== 🚀 分辨率匹配-极致性能监控 🚀 ===")
-    print("💡 预处理: 无Resize/Padding，仅格式转换，CPU开销最小化！")
+    print("\n=== 🚀 完美匹配-极致性能监控 🚀 ===")
+    print("💡 预处理: 摄像头640×360 = 模型640×360，无Resize，仅格式转换！")
     print("每20帧输出一次详细性能分析...")
 
     while True:
@@ -163,8 +164,8 @@ def inference_thread():
             avg_postprocess = total_times["postprocess"] / frame_count
             avg_pipeline = total_times["pipeline"] / frame_count
             
-            print(f"\n--- ⚡ 第{frame_count}帧性能分析 (分辨率匹配) ---")
-            print(f"输入 -> 模型: {cam_width}x{cam_height} -> {MODEL_WIDTH}x{MODEL_HEIGHT} (完美匹配)")
+            print(f"\n--- ⚡ 第{frame_count}帧性能分析 (完美匹配) ---")
+            print(f"摄像头 = 模型: {cam_width}x{cam_height} = {MODEL_WIDTH}x{MODEL_HEIGHT} (🎯 完美匹配!)")
             print(f"🎯 数据类型: {str(input_data.dtype).upper()}")
             print(f"【CPU预处理】: {preprocess_time_ms:.1f}ms (平均: {avg_preprocess:.1f}ms) ⚡")
             print(f"【NPU 推理】: {inference_time_ms:.1f}ms (平均: {avg_inference:.1f}ms) 🚀")
@@ -292,11 +293,11 @@ def stats():
         return jsonify(stats_data)
 
 if __name__ == '__main__':
-    print("🚀 车道线检测 [分辨率匹配] 实时推理系统启动")
+    print("🚀 车道线检测 [完美匹配] 实时推理系统启动")
     print("=============================================================")
     print(f"🧠 模型: {MODEL_PATH}")
-    print(f"🎯 输入尺寸: {MODEL_WIDTH}x{MODEL_HEIGHT} (与摄像头匹配)")
-    print(f"⚡ 优化: 无需Resize/Padding，CPU预处理开销已降至最低！")
+    print(f"🎯 输入尺寸: 摄像头640×360 = 模型640×360 (🎯 完美匹配!)")
+    print(f"⚡ 优化: 无需任何Resize操作，CPU预处理开销降至绝对最低！")
     print("=============================================================")
     
     Thread(target=camera_capture_thread, daemon=True).start()
