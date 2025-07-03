@@ -342,7 +342,7 @@ def print_performance_analysis(times_dict, input_tensor, model_path, provider):
 def inference_single_image(image_path, model_path, provider='CPUExecutionProvider', 
                           save_visualization=True, save_mask=False, 
                           bird_eye=False, save_control_map=False,
-                          pixels_per_unit=20, margin_ratio=0.3, full_image_bird_eye=False,
+                          pixels_per_unit=20, margin_ratio=0.1, full_image_bird_eye=False,
                           path_smooth_method='polynomial', path_degree=3, 
                           num_waypoints=20, min_road_width=10, edge_computing=False,
                           force_bottom_center=True):
@@ -609,7 +609,7 @@ class PerspectiveTransformer:
         print(f"✅ 透视变换器已初始化")
         print(f"📏 标定图像尺寸: {self.original_image_size[0]} × {self.original_image_size[1]}")
     
-    def calculate_bird_eye_params(self, pixels_per_unit=20, margin_ratio=0.3, full_image=True):
+    def calculate_bird_eye_params(self, pixels_per_unit=20, margin_ratio=0.1, full_image=True):
         """
         计算鸟瞰图参数
         
@@ -690,7 +690,7 @@ class PerspectiveTransformer:
         
         return output_width, output_height, combined_transform, view_bounds
     
-    def transform_image_and_mask(self, image, mask, pixels_per_unit=20, margin_ratio=0.3, full_image=True):
+    def transform_image_and_mask(self, image, mask, pixels_per_unit=20, margin_ratio=0.1, full_image=True):
         """
         将图像和分割掩码都转换为鸟瞰图
         
@@ -1345,7 +1345,7 @@ def main():
                        choices=["CPUExecutionProvider", "CUDAExecutionProvider"],
                        help="ONNX执行提供者")
     parser.add_argument("--pixels_per_unit", type=int, default=20, help="每单位像素数 (默认: 20)")
-    parser.add_argument("--margin_ratio", type=float, default=0.3, help="边距比例 (默认: 0.3)")
+    parser.add_argument("--margin_ratio", type=float, default=0, help="边距比例 (默认: 0，减少黑边)")
     parser.add_argument("--no_vis", action="store_true", help="不保存可视化结果，仅推理")
     parser.add_argument("--bird_eye", action="store_true", help="生成鸟瞰图（使用内置A4纸标定）")
     parser.add_argument("--full_image_bird_eye", action="store_true", help="生成完整原图的鸟瞰图（默认仅A4纸区域）")
