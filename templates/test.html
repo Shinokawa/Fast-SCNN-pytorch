@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Canvas Test</title>
+</head>
+<body>
+    <h1>Canvas测试页面</h1>
+    <div>
+        <button onclick="loadTestImage()">加载测试图片</button>
+        <button onclick="clearCanvas()">清除画布</button>
+    </div>
+    <br>
+    <canvas id="testCanvas" width="640" height="480" style="border: 1px solid black;"></canvas>
+    
+    <script>
+        const canvas = document.getElementById('testCanvas');
+        const ctx = canvas.getContext('2d');
+        let currentImage = null;
+        
+        function loadTestImage() {
+            console.log('Loading test image...');
+            
+            // Draw a simple test pattern first
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, 100, 100);
+            ctx.fillStyle = 'green';
+            ctx.fillRect(100, 0, 100, 100);
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(200, 0, 100, 100);
+            
+            console.log('Test pattern drawn');
+            
+            // Try to load an actual image
+            fetch('/api/images')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Images available:', data);
+                    if (data.images && data.images.length > 0) {
+                        const firstImage = data.images[0].filename;
+                        console.log('Loading first image:', firstImage);
+                        
+                        const img = new Image();
+                        img.onload = function() {
+                            console.log('Image loaded successfully:', img.width, 'x', img.height);
+                            currentImage = img;
+                            
+                            // Clear and draw image
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(img, 0, 0);
+                            console.log('Image drawn to canvas');
+                        };
+                        
+                        img.onerror = function(error) {
+                            console.error('Error loading image:', error);
+                        };
+                        
+                        img.src = `/api/image/${firstImage}`;
+                    } else {
+                        console.log('No images found');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching images:', error);
+                });
+        }
+        
+        function clearCanvas() {
+            console.log('Clearing canvas...');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (currentImage) {
+                console.log('Redrawing current image...');
+                ctx.drawImage(currentImage, 0, 0);
+            }
+        }
+    </script>
+</body>
+</html>

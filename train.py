@@ -2,6 +2,7 @@ import os
 import argparse
 import time
 import shutil
+import datetime
 
 import torch
 import torch.utils.data as data
@@ -14,6 +15,7 @@ from models.fast_scnn import get_fast_scnn
 from utils.loss import MixSoftmaxCrossEntropyLoss, MixSoftmaxCrossEntropyOHEMLoss, DiceLoss, MixDiceLoss, FocalDiceLoss
 from utils.lr_scheduler import LRScheduler
 from utils.metric import SegmentationMetric
+from training_visualizer import TrainingMonitor
 
 
 def parse_args():
@@ -24,6 +26,23 @@ def parse_args():
                         help='model name (default: fast_scnn)')
     parser.add_argument('--dataset', type=str, default='citys',
                         help='dataset name (default: citys)')
+    # BDD100K specific arguments
+    parser.add_argument('--subset', type=str, default='100k', choices=['10k', '100k'],
+                        help='BDD100K subset to use (default: 100k)')
+    parser.add_argument('--label-type', type=str, default='binary', choices=['binary', 'ternary'],
+                        help='BDD100K label type: binary (2 classes), ternary (3 classes)')
+    parser.add_argument('--sample-ratio', type=float, default=1.0,
+                        help='sampling ratio for quick experimentation (default: 1.0 means 100 percent)')
+    parser.add_argument('--max-samples', type=int, default=None,
+                        help='maximum number of samples to use (overrides sample-ratio)')
+    parser.add_argument('--keep-original-size', action='store_true', default=False,
+                        help='keep original image size without cropping (for full scene training)')
+    parser.add_argument('--multi-scale', action='store_true', default=False,
+                        help='use multi-scale training without cropping')
+    parser.add_argument('--min-scale', type=float, default=0.8,
+                        help='minimum scale factor for multi-scale training')
+    parser.add_argument('--max-scale', type=float, default=1.2,
+                        help='maximum scale factor for multi-scale training')
     parser.add_argument('--base-size', type=int, default=1024,
                         help='base image size')
     parser.add_argument('--crop-size', type=int, default=768,
@@ -88,6 +107,31 @@ class Trainer(object):
         ])
         # dataset and dataloader
         data_kwargs = {'transform': input_transform, 'base_size': args.base_size, 'crop_size': args.crop_size}
+        
+        # Add BDD100K specific parameters if using BDD100K dataset
+        if args.dataset == 'bdd100k':
+            data_kwargs.update({
+                'subset': args.subset,
+                'label_type': args.label_type,
+                'sample_ratio': args.sample_ratio,
+                'max_samples': args.max_samples,
+                'keep_original_size': args.keep_original_size,
+                'multi_scale': args.multi_scale,
+                'min_scale': args.min_scale,
+                'max_scale': args.max_scale
+            })
+        
+        # Add custom dataset specific parameters
+        elif args.dataset == 'custom':
+            data_kwargs.update({
+                'sample_ratio': args.sample_ratio,
+                'max_samples': args.max_samples,
+                'keep_original_size': args.keep_original_size,
+                'multi_scale': args.multi_scale,
+                'min_scale': args.min_scale,
+                'max_scale': args.max_scale
+            })
+        
         train_dataset = get_segmentation_dataset(args.dataset, split=args.train_split, mode='train', **data_kwargs)
         val_dataset = get_segmentation_dataset(args.dataset, split='val', mode='val', **data_kwargs)
         self.train_loader = data.DataLoader(dataset=train_dataset,
@@ -103,7 +147,26 @@ class Trainer(object):
                                           pin_memory=True)
 
         # create network
-        self.model = get_fast_scnn(dataset=args.dataset, aux=args.aux)
+        # For BDD100K, determine num_classes based on label_type
+        if args.dataset == 'bdd100k':
+            if args.label_type == 'binary':
+                num_classes = 2
+            elif args.label_type == 'ternary':
+                num_classes = 3
+            else:
+                raise ValueError(f"Invalid label_type: {args.label_type}")
+            
+            # Create model directly with explicit num_classes
+            from models.fast_scnn import FastSCNN
+            self.model = FastSCNN(num_classes=num_classes, aux=args.aux)
+        # For custom dataset, use binary classification (2 classes)
+        elif args.dataset == 'custom':
+            from models.fast_scnn import FastSCNN
+            self.model = FastSCNN(num_classes=2, aux=args.aux)
+            print(f"Created Fast-SCNN model for custom dataset with 2 classes (binary segmentation)")
+        else:
+            # Use original method for other datasets
+            self.model = get_fast_scnn(dataset=args.dataset, aux=args.aux)
         if torch.cuda.device_count() > 1:
             self.model = torch.nn.DataParallel(self.model, device_ids=[0, 1, 2])
         self.model.to(args.device)
@@ -154,6 +217,11 @@ class Trainer(object):
         self.val_miou_history = []
         self.val_pixacc_history = []
         
+        # 训练监控器
+        experiment_name = f"bdd100k_{args.label_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.monitor = TrainingMonitor(save_dir='./logs', experiment_name=experiment_name)
+        self.monitor.log_config(args)
+
         print(f"\n=== Training Configuration ===")
         print(f"Dataset: {args.dataset}")
         print(f"Model: {args.model}")
@@ -250,6 +318,7 @@ class Trainer(object):
                 epoch_time, avg_epoch_loss, epoch_samples_per_sec))
 
             # Run validation
+            val_metrics = None
             if not self.args.no_val and (epoch + 1) % self.args.val_interval == 0:
                 val_metrics = self.validation(epoch)
                 self.val_loss_history.append(val_metrics['loss'])
@@ -258,6 +327,17 @@ class Trainer(object):
             else:
                 # Save checkpoint even without validation
                 save_checkpoint(self.model, self.args, is_best=False)
+            
+            # 记录到监控器
+            self.monitor.log_epoch(
+                epoch=epoch + 1,
+                train_loss=avg_epoch_loss,
+                val_loss=val_metrics['loss'] if val_metrics else None,
+                val_miou=val_metrics['mIoU'] if val_metrics else None,
+                val_pixacc=val_metrics['pixAcc'] if val_metrics else None,
+                learning_rate=cur_lr,
+                epoch_time=epoch_time
+            )
             
             print("-" * 80)
 
@@ -281,6 +361,11 @@ class Trainer(object):
             print(f"   Final PixAcc: {self.val_pixacc_history[-1]*100:.2f}%")
 
         save_checkpoint(self.model, self.args, is_best=False)
+        
+        # 生成训练可视化和报告
+        print(f"\n📊 生成训练分析报告...")
+        self.monitor.plot_training_curves(save_plot=True)
+        self.monitor.generate_report()
 
     def validation(self, epoch):
         print(f"\n🔍 Running validation for epoch {epoch}...")

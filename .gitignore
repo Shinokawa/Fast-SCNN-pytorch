@@ -117,3 +117,15 @@ weights/
 
 # result
 test_result/
+
+bdd100k/
+data
+custom_scratch_results
+custom_inference_results
+custom_inference_results
+custom_finetune_results
+bdd100k_inference_results
+masks
+model_validation_results
+line
+logs

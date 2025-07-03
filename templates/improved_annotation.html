@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>智能车道线标注工具 - 改进版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 320px;
+            background: white;
+            border-right: 1px solid #ddd;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #2a2a2a;
+        }
+
+        .toolbar {
+            background: white;
+            padding: 15px 20px;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #annotationCanvas {
+            border: 1px solid #333;
+            background: white;
+            cursor: crosshair;
+            max-width: 95%;
+            max-height: 95%;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-primary { background: #007AFF; color: white; }
+        .btn-secondary { background: #8E8E93; color: white; }
+        .btn-success { background: #34C759; color: white; }
+        .btn-danger { background: #FF3B30; color: white; }
+        .btn-warning { background: #FF9500; color: white; }
+
+        .btn:hover { opacity: 0.8; }
+        .btn:active { transform: scale(0.95); }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .slider {
+            width: 80px;
+        }
+
+        .image-list {
+            list-style: none;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .image-item {
+            padding: 12px;
+            border: 1px solid #ddd;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 14px;
+        }
+
+        .image-item:hover {
+            background: #f0f0f0;
+        }
+
+        .image-item.active {
+            background: #007AFF;
+            color: white;
+        }
+
+        .image-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .image-item-info {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .image-item.active .image-item-info {
+            color: #ccc;
+        }
+
+        .status-badge {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+        }
+
+        .status-done {
+            background: #34C759;
+            color: white;
+        }
+
+        .status-pending {
+            background: #FF9500;
+            color: white;
+        }
+
+        .progress-info {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .upload-area:hover {
+            border-color: #007AFF;
+        }
+
+        .tool-panel {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .tool-panel h4 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .auto-tools {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .batch-tools {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e3f2fd;
+            border-radius: 8px;
+        }
+
+        .batch-tools h4 {
+            color: #1976d2;
+            margin-bottom: 10px;
+        }
+
+        .batch-controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .selection-info {
+            margin-top: 10px;
+            padding: 8px;
+            background: #fff3cd;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .tool-info {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            max-width: 250px;
+        }
+
+        .mode-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .history-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background: #34C759;
+            color: white;
+            border-radius: 6px;
+            z-index: 1000;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.error {
+            background: #FF3B30;
+        }
+
+        .notification.warning {
+            background: #FF9500;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 5px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            margin: 0;
+        }
+
+        @media (max-width: 1024px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: 250px;
+                border-right: none;
+                border-bottom: 1px solid #ddd;
+            }
+            
+            .main-content {
+                height: calc(100vh - 250px);
+            }
+            
+            .toolbar {
+                padding: 10px;
+                gap: 8px;
+            }
+            
+            .btn {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="progress-info">
+                <h3>标注进度</h3>
+                <div>已完成: <span id="completedCount">0</span></div>
+                <div>总计: <span id="totalCount">0</span></div>
+                <div>进度: <span id="progressPercent">0%</span></div>
+            </div>
+
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <div>📁 点击上传图片</div>
+                <div style="font-size: 12px; color: #666;">支持 JPG, PNG, BMP 格式</div>
+                <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
+            </div>
+
+            <div class="tool-panel">
+                <h4>🤖 智能工具</h4>
+                <div class="auto-tools">
+                    <button class="btn btn-primary" onclick="autoDetectLanes()">自动检测车道</button>
+                    <button class="btn btn-warning" onclick="enableFloodFill()">区域填充模式</button>
+                    <div class="control-group">
+                        <label>填充容差:</label>
+                        <input type="range" id="floodTolerance" class="slider" min="10" max="100" value="30">
+                        <span id="floodToleranceValue">30</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="batch-tools">
+                <h4>📦 批量操作</h4>
+                <div class="batch-controls">
+                    <button class="btn btn-primary" onclick="selectAll()">全选</button>
+                    <button class="btn btn-secondary" onclick="selectNone()">取消全选</button>
+                    <button class="btn btn-success" onclick="batchAutoDetect()">批量检测</button>
+                    <button class="btn btn-danger" onclick="batchClearMasks()">批量清除</button>
+                </div>
+                <div id="selectionInfo" class="selection-info" style="display: none;">
+                    已选择 <span id="selectedCount">0</span> 张图片
+                </div>
+            </div>
+
+            <h3>图片列表</h3>
+            <ul id="imageList" class="image-list"></ul>
+        </div>
+
+        <div class="main-content">
+            <div class="toolbar">
+                <div class="control-group">
+                    <label>模式:</label>
+                    <select id="drawMode">
+                        <option value="brush">画笔模式</option>
+                        <option value="eraser">橡皮擦模式</option>
+                        <option value="polygon">多边形模式</option>
+                        <option value="flood_fill">区域填充</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>画笔:</label>
+                    <input type="range" id="brushSize" class="slider" min="1" max="50" value="8">
+                    <span id="brushSizeValue">8</span>
+                </div>
+
+                <div class="control-group">
+                    <label>橡皮:</label>
+                    <input type="range" id="eraserSize" class="slider" min="5" max="80" value="15">
+                    <span id="eraserSizeValue">15</span>
+                </div>
+
+                <div class="history-controls">
+                    <button class="btn btn-secondary" onclick="undoLast()">撤销 (Ctrl+Z)</button>
+                    <button class="btn btn-secondary" onclick="redoLast()">重做 (Ctrl+Y)</button>
+                </div>
+
+                <button class="btn btn-secondary" onclick="clearCanvas()">清除</button>
+                <button class="btn btn-primary" onclick="togglePreview()">预览</button>
+                <button class="btn btn-success" onclick="saveMask()">保存 (Ctrl+S)</button>
+                <button class="btn btn-primary" onclick="nextImage()">下一张</button>
+            </div>
+
+            <div class="canvas-container">
+                <canvas id="annotationCanvas"></canvas>
+                <div class="tool-info">
+                    <div class="mode-indicator">
+                        <span id="modeIcon">🖊️</span>
+                        <span id="modeDisplay">画笔模式</span>
+                    </div>
+                    <div id="toolInstructions">
+                        • 使用鼠标或触控笔绘制可驾驶区域<br>
+                        • 绿色区域表示可驾驶路面<br>
+                        • 支持撤销/重做操作<br>
+                        • 快捷键: B=画笔, E=橡皮, P=多边形, F=填充
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通知提示 -->
+    <div id="notification" class="notification"></div>
+
+    <script>
+        class ImprovedLaneAnnotationTool {
+            constructor() {
+                this.canvas = document.getElementById('annotationCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.isDrawing = false;
+                this.currentImage = null;
+                this.currentImageName = '';
+                this.brushSize = 8;
+                this.eraserSize = 15;
+                this.drawMode = 'brush';
+                this.polygonPoints = [];
+                this.images = [];
+                this.currentImageIndex = 0;
+                this.maskCanvas = document.createElement('canvas');
+                this.maskCtx = this.maskCanvas.getContext('2d');
+                this.previewMode = false;
+                this.floodFillMode = false;
+                this.floodTolerance = 30;
+                
+                // 历史记录
+                this.history = [];
+                this.historyStep = -1;
+                this.maxHistorySteps = 20;
+                
+                // 批量选择
+                this.selectedImages = new Set();
+                
+                this.setupEventListeners();
+                this.loadImages();
+                this.updateModeDisplay();
+                this.updateCursor();
+                this.saveState();
+            }
+
+            setupEventListeners() {
+                // Canvas events
+                this.canvas.addEventListener('mousedown', this.startDrawing.bind(this));
+                this.canvas.addEventListener('mousemove', this.draw.bind(this));
+                this.canvas.addEventListener('mouseup', this.stopDrawing.bind(this));
+                this.canvas.addEventListener('dblclick', this.handleDoubleClick.bind(this));
+                
+                // Touch events for mobile/tablet
+                this.canvas.addEventListener('touchstart', this.handleTouch.bind(this));
+                this.canvas.addEventListener('touchmove', this.handleTouch.bind(this));
+                this.canvas.addEventListener('touchend', this.handleTouch.bind(this));
+                
+                // Prevent scrolling when touching canvas
+                this.canvas.addEventListener('touchstart', (e) => e.preventDefault());
+                this.canvas.addEventListener('touchend', (e) => e.preventDefault());
+                this.canvas.addEventListener('touchmove', (e) => e.preventDefault());
+
+                // Controls
+                document.getElementById('brushSize').addEventListener('input', (e) => {
+                    this.brushSize = parseInt(e.target.value);
+                    document.getElementById('brushSizeValue').textContent = this.brushSize;
+                });
+
+                document.getElementById('eraserSize').addEventListener('input', (e) => {
+                    this.eraserSize = parseInt(e.target.value);
+                    document.getElementById('eraserSizeValue').textContent = this.eraserSize;
+                });
+
+                document.getElementById('floodTolerance').addEventListener('input', (e) => {
+                    this.floodTolerance = parseInt(e.target.value);
+                    document.getElementById('floodToleranceValue').textContent = this.floodTolerance;
+                });
+
+                document.getElementById('drawMode').addEventListener('change', (e) => {
+                    this.drawMode = e.target.value;
+                    this.floodFillMode = (this.drawMode === 'flood_fill');
+                    this.updateCursor();
+                    this.updateModeDisplay();
+                });
+
+                // File upload
+                document.getElementById('fileInput').addEventListener('change', this.uploadFiles.bind(this));
+
+                // Keyboard shortcuts
+                document.addEventListener('keydown', (e) => {
+                    if (e.ctrlKey) {
+                        if (e.key === 's') {
+                            e.preventDefault();
+                            this.saveMask();
+                        } else if (e.key === 'z') {
+                            e.preventDefault();
+                            this.undoLast();
+                        } else if (e.key === 'y') {
+                            e.preventDefault();
+                            this.redoLast();
+                        }
+                    } else {
+                        switch(e.key.toLowerCase()) {
+                            case 'b':
+                                this.setMode('brush');
+                                break;
+                            case 'e':
+                                this.setMode('eraser');
+                                break;
+                            case 'p':
+                                this.setMode('polygon');
+                                break;
+                            case 'f':
+                                this.setMode('flood_fill');
+                                break;
+                        }
+                    }
+                });
+            }
+
+            setMode(mode) {
+                this.drawMode = mode;
+                this.floodFillMode = (mode === 'flood_fill');
+                document.getElementById('drawMode').value = mode;
+                this.updateCursor();
+                this.updateModeDisplay();
+            }
+
+            updateModeDisplay() {
+                const modeIcon = document.getElementById('modeIcon');
+                const modeDisplay = document.getElementById('modeDisplay');
+                const instructions = document.getElementById('toolInstructions');
+                
+                switch(this.drawMode) {
+                    case 'brush':
+                        modeIcon.textContent = '🖊️';
+                        modeDisplay.textContent = '画笔模式';
+                        instructions.innerHTML = '• 拖拽绘制可驾驶区域<br>• 绿色区域表示可驾驶路面<br>• 按住鼠标左键并拖拽';
+                        break;
+                    case 'eraser':
+                        modeIcon.textContent = '🧽';
+                        modeDisplay.textContent = '橡皮擦模式';
+                        instructions.innerHTML = '• 擦除已标注的区域<br>• 按住鼠标左键并拖拽擦除<br>• 调整橡皮擦大小';
+                        break;
+                    case 'polygon':
+                        modeIcon.textContent = '📐';
+                        modeDisplay.textContent = '多边形模式';
+                        instructions.innerHTML = '• 点击创建多边形顶点<br>• 双击完成多边形绘制<br>• 自动填充多边形内部';
+                        break;
+                    case 'flood_fill':
+                        modeIcon.textContent = '🪣';
+                        modeDisplay.textContent = '区域填充模式';
+                        instructions.innerHTML = '• 点击相似颜色区域进行填充<br>• 调整容差值控制填充范围<br>• 适用于填充封闭区域';
+                        break;
+                }
+            }
+
+            updateCursor() {
+                this.canvas.className = '';
+                if (this.drawMode === 'brush') {
+                    this.canvas.style.cursor = 'crosshair';
+                } else if (this.drawMode === 'eraser') {
+                    this.canvas.style.cursor = 'grab';
+                } else if (this.drawMode === 'polygon') {
+                    this.canvas.style.cursor = 'pointer';
+                } else if (this.drawMode === 'flood_fill') {
+                    this.canvas.style.cursor = 'cell';
+                }
+            }
+
+            saveState() {
+                // 保存当前canvas状态到历史记录
+                this.historyStep++;
+                if (this.historyStep < this.history.length) {
+                    this.history.length = this.historyStep;
+                }
+                
+                const imageData = this.maskCtx.getImageData(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                this.history.push(imageData);
+                
+                if (this.history.length > this.maxHistorySteps) {
+                    this.history.shift();
+                    this.historyStep--;
+                }
+            }
+
+            undoLast() {
+                if (this.historyStep > 0) {
+                    this.historyStep--;
+                    const imageData = this.history[this.historyStep];
+                    this.maskCtx.putImageData(imageData, 0, 0);
+                    this.redrawCanvas();
+                }
+            }
+
+            redoLast() {
+                if (this.historyStep < this.history.length - 1) {
+                    this.historyStep++;
+                    const imageData = this.history[this.historyStep];
+                    this.maskCtx.putImageData(imageData, 0, 0);
+                    this.redrawCanvas();
+                }
+            }
+
+            handleTouch(e) {
+                e.preventDefault();
+                const touch = e.touches[0] || e.changedTouches[0];
+                const mouseEvent = new MouseEvent(e.type.replace('touch', 'mouse'), {
+                    clientX: touch.clientX,
+                    clientY: touch.clientY
+                });
+                this.canvas.dispatchEvent(mouseEvent);
+            }
+
+            handleDoubleClick(e) {
+                if (this.drawMode === 'polygon' && this.polygonPoints.length >= 3) {
+                    this.finishPolygon();
+                }
+            }
+
+            getMousePos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                
+                return {
+                    x: (e.clientX - rect.left) * scaleX,
+                    y: (e.clientY - rect.top) * scaleY
+                };
+            }
+
+            startDrawing(e) {
+                const pos = this.getMousePos(e);
+                
+                if (this.drawMode === 'flood_fill') {
+                    this.performFloodFill(pos.x, pos.y);
+                    return;
+                }
+                
+                if (this.drawMode === 'polygon') {
+                    this.addPolygonPoint(pos.x, pos.y);
+                    return;
+                }
+                
+                this.isDrawing = true;
+                this.draw(e);
+            }
+
+            draw(e) {
+                if (!this.isDrawing || this.drawMode === 'polygon' || this.drawMode === 'flood_fill') return;
+                
+                const pos = this.getMousePos(e);
+                
+                // 只在mask画布上绘制，主画布通过redrawCanvas重绘
+                this.maskCtx.globalCompositeOperation = 'source-over';
+                
+                if (this.drawMode === 'eraser') {
+                    this.maskCtx.globalCompositeOperation = 'destination-out';
+                }
+                
+                const size = this.drawMode === 'eraser' ? this.eraserSize : this.brushSize;
+                
+                // 只在mask画布上绘制
+                this.maskCtx.beginPath();
+                this.maskCtx.arc(pos.x, pos.y, size, 0, 2 * Math.PI);
+                this.maskCtx.fillStyle = this.drawMode === 'eraser' ? '#000000' : '#FFFFFF';
+                this.maskCtx.fill();
+                
+                // 立即重绘主画布以显示变化
+                this.redrawCanvas();
+            }
+
+            stopDrawing() {
+                if (this.isDrawing) {
+                    this.isDrawing = false;
+                    this.saveState();
+                }
+            }
+
+            addPolygonPoint(x, y) {
+                this.polygonPoints.push({x, y});
+                
+                // 重绘画布以显示多边形预览
+                this.redrawCanvas();
+                
+                // 在主画布上绘制临时的多边形预览
+                this.ctx.fillStyle = '#FF0000';
+                this.ctx.strokeStyle = '#FF0000';
+                this.ctx.lineWidth = 2;
+                
+                // 绘制所有点
+                this.polygonPoints.forEach(point => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(point.x, point.y, 3, 0, 2 * Math.PI);
+                    this.ctx.fill();
+                });
+                
+                // 绘制线段
+                if (this.polygonPoints.length > 1) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
+                    for (let i = 1; i < this.polygonPoints.length; i++) {
+                        this.ctx.lineTo(this.polygonPoints[i].x, this.polygonPoints[i].y);
+                    }
+                    this.ctx.stroke();
+                }
+            }
+
+            finishPolygon() {
+                if (this.polygonPoints.length < 3) return;
+                
+                // 创建路径并填充
+                this.maskCtx.fillStyle = '#FFFFFF';
+                this.maskCtx.beginPath();
+                this.maskCtx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
+                for (let i = 1; i < this.polygonPoints.length; i++) {
+                    this.maskCtx.lineTo(this.polygonPoints[i].x, this.polygonPoints[i].y);
+                }
+                this.maskCtx.closePath();
+                this.maskCtx.fill();
+                
+                // 重绘canvas
+                this.redrawCanvas();
+                
+                // 清除多边形点
+                this.polygonPoints = [];
+                this.saveState();
+            }
+
+            async performFloodFill(x, y) {
+                if (!this.currentImageName) return;
+                
+                try {
+                    const response = await fetch('/api/flood_fill', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            filename: this.currentImageName,
+                            start_point: [Math.floor(x), Math.floor(y)],
+                            tolerance: this.floodTolerance
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadMaskFromData(result.mask_data);
+                        this.saveState();
+                        this.showNotification('区域填充完成', 'success');
+                    } else {
+                        this.showNotification(`填充失败: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`填充出错: ${error.message}`, 'error');
+                }
+            }
+
+            redrawCanvas() {
+                if (!this.currentImage) return;
+                
+                // 清除并重绘背景图像
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.drawImage(this.currentImage, 0, 0, this.canvas.width, this.canvas.height);
+                
+                // 创建绿色版本的mask用于显示
+                const maskImageData = this.maskCtx.getImageData(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                const data = maskImageData.data;
+                
+                // 创建一个临时画布来绘制绿色mask
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = this.maskCanvas.width;
+                tempCanvas.height = this.maskCanvas.height;
+                const tempCtx = tempCanvas.getContext('2d');
+                const tempImageData = tempCtx.createImageData(tempCanvas.width, tempCanvas.height);
+                const tempData = tempImageData.data;
+                
+                // 将白色像素转换为绿色
+                for (let i = 0; i < data.length; i += 4) {
+                    if (data[i] > 128 || data[i + 1] > 128 || data[i + 2] > 128) { // 检测白色像素
+                        tempData[i] = 0;     // R = 0
+                        tempData[i + 1] = 255; // G = 255 (绿色)
+                        tempData[i + 2] = 0;   // B = 0
+                        tempData[i + 3] = 180; // A = 180 (半透明)
+                    } else {
+                        tempData[i] = 0;
+                        tempData[i + 1] = 0;
+                        tempData[i + 2] = 0;
+                        tempData[i + 3] = 0; // 透明
+                    }
+                }
+                
+                tempCtx.putImageData(tempImageData, 0, 0);
+                
+                // 绘制绿色mask覆盖层
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.drawImage(tempCanvas, 0, 0);
+            }
+
+            async loadMaskFromData(maskDataUrl) {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        // 不清除现有mask，而是叠加绘制
+                        this.maskCtx.globalCompositeOperation = 'source-over';
+                        this.maskCtx.drawImage(img, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                        this.redrawCanvas();
+                        resolve();
+                    };
+                    img.onerror = reject;
+                    img.src = maskDataUrl;
+                });
+            }
+
+            async loadImages() {
+                try {
+                    const response = await fetch('/api/images');
+                    const data = await response.json();
+                    this.images = data.images;
+                    this.updateImageList();
+                    this.updateProgress();
+                    
+                    if (this.images.length > 0) {
+                        this.loadImage(0);
+                    }
+                } catch (error) {
+                    this.showNotification('加载图片列表失败', 'error');
+                }
+            }
+
+            updateImageList() {
+                const imageList = document.getElementById('imageList');
+                imageList.innerHTML = '';
+                
+                this.images.forEach((image, index) => {
+                    const li = document.createElement('li');
+                    li.className = `image-item ${index === this.currentImageIndex ? 'active' : ''}`;
+                    
+                    li.innerHTML = `
+                        <div class="image-item-header">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="img-${index}" onchange="annotationTool.toggleImageSelection(${index})">
+                                <label for="img-${index}">${image.filename}</label>
+                            </div>
+                            <span class="status-badge ${image.has_mask ? 'status-done' : 'status-pending'}">
+                                ${image.has_mask ? '已完成' : '待标注'}
+                            </span>
+                        </div>
+                        <div class="image-item-info">
+                            大小: ${this.formatFileSize(image.size)} | 
+                            修改: ${new Date(image.modified).toLocaleString()}
+                        </div>
+                    `;
+                    
+                    li.addEventListener('click', (e) => {
+                        if (e.target.type !== 'checkbox') {
+                            this.loadImage(index);
+                        }
+                    });
+                    
+                    imageList.appendChild(li);
+                });
+            }
+
+            formatFileSize(bytes) {
+                if (bytes < 1024) return bytes + ' B';
+                if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+
+            updateProgress() {
+                const completed = this.images.filter(img => img.has_mask).length;
+                const total = this.images.length;
+                const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+                
+                document.getElementById('completedCount').textContent = completed;
+                document.getElementById('totalCount').textContent = total;
+                document.getElementById('progressPercent').textContent = percent + '%';
+            }
+
+            toggleImageSelection(index) {
+                if (this.selectedImages.has(index)) {
+                    this.selectedImages.delete(index);
+                } else {
+                    this.selectedImages.add(index);
+                }
+                this.updateSelectionInfo();
+            }
+
+            updateSelectionInfo() {
+                const selectionInfo = document.getElementById('selectionInfo');
+                const selectedCount = document.getElementById('selectedCount');
+                
+                if (this.selectedImages.size > 0) {
+                    selectedCount.textContent = this.selectedImages.size;
+                    selectionInfo.style.display = 'block';
+                } else {
+                    selectionInfo.style.display = 'none';
+                }
+            }
+
+            async loadImage(index) {
+                if (index < 0 || index >= this.images.length) return;
+                
+                this.currentImageIndex = index;
+                this.currentImageName = this.images[index].filename;
+                
+                try {
+                    // Load image
+                    const img = new Image();
+                    img.onload = async () => {
+                        this.currentImage = img;
+                        
+                        // Setup canvas
+                        this.canvas.width = img.width;
+                        this.canvas.height = img.height;
+                        this.maskCanvas.width = img.width;
+                        this.maskCanvas.height = img.height;
+                        
+                        // Clear everything
+                        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                        this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                        
+                        // Draw image
+                        this.ctx.drawImage(img, 0, 0);
+                        
+                        // Load existing mask if available
+                        await this.loadExistingMask();
+                        
+                        // Reset history
+                        this.history = [];
+                        this.historyStep = -1;
+                        this.saveState();
+                        
+                        this.updateImageList();
+                    };
+                    
+                    img.src = `/api/image/${this.currentImageName}?t=${Date.now()}`;
+                    
+                } catch (error) {
+                    this.showNotification('加载图片失败', 'error');
+                }
+            }
+
+            async loadExistingMask() {
+                try {
+                    const response = await fetch(`/api/mask/${this.currentImageName}?t=${Date.now()}`);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const img = new Image();
+                        img.onload = () => {
+                            // 清除现有mask再绘制新的
+                            this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                            this.maskCtx.drawImage(img, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                            this.redrawCanvas();
+                            this.saveState(); // 保存初始状态到历史记录
+                        };
+                        img.src = URL.createObjectURL(blob);
+                    } else {
+                        // 如果没有现有mask，确保mask画布是清空的
+                        this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                        this.redrawCanvas();
+                        this.saveState();
+                    }
+                } catch (error) {
+                    console.log('No existing mask found');
+                    // 确保mask画布是清空的
+                    this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                    this.redrawCanvas();
+                    this.saveState();
+                }
+            }
+
+            async saveMask() {
+                if (!this.currentImageName) {
+                    this.showNotification('没有选择图片', 'warning');
+                    return;
+                }
+                
+                try {
+                    const maskDataUrl = this.maskCanvas.toDataURL('image/png');
+                    
+                    const response = await fetch('/api/save_mask', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            filename: this.currentImageName,
+                            mask_data: maskDataUrl
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showNotification('标注已保存', 'success');
+                        // Update image status
+                        this.images[this.currentImageIndex].has_mask = true;
+                        this.updateImageList();
+                        this.updateProgress();
+                    } else {
+                        this.showNotification(`保存失败: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`保存出错: ${error.message}`, 'error');
+                }
+            }
+
+            clearCanvas() {
+                this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+                this.redrawCanvas();
+                this.polygonPoints = [];
+                this.saveState();
+            }
+
+            nextImage() {
+                if (this.currentImageIndex < this.images.length - 1) {
+                    this.loadImage(this.currentImageIndex + 1);
+                }
+            }
+
+            togglePreview() {
+                this.previewMode = !this.previewMode;
+                if (this.previewMode) {
+                    // Show only mask
+                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.drawImage(this.maskCanvas, 0, 0);
+                } else {
+                    this.redrawCanvas();
+                }
+            }
+
+            async autoDetectLanes() {
+                if (!this.currentImageName) {
+                    this.showNotification('请先选择图片', 'warning');
+                    return;
+                }
+                
+                try {
+                    this.showNotification('正在自动检测车道...', 'info');
+                    
+                    const response = await fetch('/api/auto_detect_lanes', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            filename: this.currentImageName
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadMaskFromData(result.mask_data);
+                        this.saveState();
+                        this.showNotification(result.message, 'success');
+                    } else {
+                        this.showNotification(`检测失败: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`检测出错: ${error.message}`, 'error');
+                }
+            }
+
+            enableFloodFill() {
+                this.setMode('flood_fill');
+                this.showNotification('已切换到区域填充模式，点击相似区域进行填充', 'info');
+            }
+
+            selectAll() {
+                this.selectedImages.clear();
+                for (let i = 0; i < this.images.length; i++) {
+                    this.selectedImages.add(i);
+                    document.getElementById(`img-${i}`).checked = true;
+                }
+                this.updateSelectionInfo();
+            }
+
+            selectNone() {
+                this.selectedImages.clear();
+                for (let i = 0; i < this.images.length; i++) {
+                    document.getElementById(`img-${i}`).checked = false;
+                }
+                this.updateSelectionInfo();
+            }
+
+            async batchAutoDetect() {
+                if (this.selectedImages.size === 0) {
+                    this.showNotification('请先选择要处理的图片', 'warning');
+                    return;
+                }
+                
+                const filenames = Array.from(this.selectedImages).map(i => this.images[i].filename);
+                
+                try {
+                    this.showNotification(`正在批量处理 ${filenames.length} 张图片...`, 'info');
+                    
+                    const response = await fetch('/api/batch_process', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            filenames: filenames,
+                            operation: 'auto_detect'
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showNotification(`批量处理完成，成功处理 ${result.processed} 张图片`, 'success');
+                        await this.loadImages(); // Reload image list
+                    } else {
+                        this.showNotification('批量处理失败', 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`批量处理出错: ${error.message}`, 'error');
+                }
+            }
+
+            async batchClearMasks() {
+                if (this.selectedImages.size === 0) {
+                    this.showNotification('请先选择要清除的图片', 'warning');
+                    return;
+                }
+                
+                if (!confirm(`确定要清除 ${this.selectedImages.size} 张图片的标注吗？`)) {
+                    return;
+                }
+                
+                const filenames = Array.from(this.selectedImages).map(i => this.images[i].filename);
+                
+                try {
+                    const response = await fetch('/api/batch_process', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            filenames: filenames,
+                            operation: 'clear_masks'
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showNotification(`成功清除 ${result.processed} 张图片的标注`, 'success');
+                        await this.loadImages(); // Reload image list
+                    } else {
+                        this.showNotification('批量清除失败', 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`批量清除出错: ${error.message}`, 'error');
+                }
+            }
+
+            async uploadFiles(event) {
+                const files = Array.from(event.target.files);
+                if (files.length === 0) return;
+                
+                const formData = new FormData();
+                files.forEach(file => {
+                    formData.append('files', file);
+                });
+                
+                try {
+                    this.showNotification(`正在上传 ${files.length} 个文件...`, 'info');
+                    
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    if (result.success) {
+                        let message = `成功上传 ${result.uploaded_count} 个文件`;
+                        if (result.skipped_count > 0) {
+                            message += `，跳过 ${result.skipped_count} 个重复文件`;
+                        }
+                        this.showNotification(message, 'success');
+                        await this.loadImages(); // Reload image list
+                    } else {
+                        this.showNotification(`上传失败: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showNotification(`上传出错: ${error.message}`, 'error');
+                }
+                
+                // Clear file input
+                event.target.value = '';
+            }
+
+            showNotification(message, type = 'info') {
+                const notification = document.getElementById('notification');
+                notification.textContent = message;
+                notification.className = `notification ${type} show`;
+                
+                setTimeout(() => {
+                    notification.classList.remove('show');
+                }, 3000);
+            }
+        }
+
+        // Global functions for HTML onclick handlers
+        let annotationTool;
+
+        window.onload = function() {
+            annotationTool = new ImprovedLaneAnnotationTool();
+        };
+
+        function undoLast() { annotationTool.undoLast(); }
+        function redoLast() { annotationTool.redoLast(); }
+        function clearCanvas() { annotationTool.clearCanvas(); }
+        function togglePreview() { annotationTool.togglePreview(); }
+        function saveMask() { annotationTool.saveMask(); }
+        function nextImage() { annotationTool.nextImage(); }
+        function autoDetectLanes() { annotationTool.autoDetectLanes(); }
+        function enableFloodFill() { annotationTool.enableFloodFill(); }
+        function selectAll() { annotationTool.selectAll(); }
+        function selectNone() { annotationTool.selectNone(); }
+        function batchAutoDetect() { annotationTool.batchAutoDetect(); }
+        function batchClearMasks() { annotationTool.batchClearMasks(); }
+
+        // Handle polygon double-click
+        document.addEventListener('dblclick', function(e) {
+            if (e.target.id === 'annotationCanvas' && annotationTool.drawMode === 'polygon') {
+                annotationTool.finishPolygon();
+            }
+        });
+    </script>
+</body>
+</html>

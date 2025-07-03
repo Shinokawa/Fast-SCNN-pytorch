@@ -1,5 +1,5 @@
 car
-readlight
-yellolight
-spotlight
-greenlight
+tl_red
+tl_yellow
+tl_none
+tl_green

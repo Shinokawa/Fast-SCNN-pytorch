@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简化版Web标注工具</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-warning { background: #ffc107; color: black; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        
+        .btn:hover { opacity: 0.8; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .canvas-container {
+            position: relative;
+            border: 2px solid #ddd;
+            display: inline-block;
+            background: #f9f9f9;
+        }
+        
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }
+        
+        .image-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        
+        .image-item {
+            padding: 8px;
+            cursor: pointer;
+            border-radius: 3px;
+            margin-bottom: 5px;
+            transition: background-color 0.2s;
+        }
+        
+        .image-item:hover { background-color: #e9ecef; }
+        .image-item.active { background-color: #007bff; color: white; }
+        .image-item.has-mask { border-left: 4px solid #28a745; }
+        
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+            z-index: 1000;
+            max-width: 300px;
+        }
+        
+        .notification.success { background: #28a745; }
+        .notification.error { background: #dc3545; }
+        .notification.info { background: #17a2b8; }
+        
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .slider {
+            width: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎨 简化版Web标注工具</h1>
+            <div class="info">
+                <span id="imageInfo">请选择图片</span>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="polygonBtn" class="btn btn-primary">多边形模式</button>
+            <button id="brushBtn" class="btn btn-secondary">画笔模式</button>
+            <button id="eraseBtn" class="btn btn-warning">擦除模式</button>
+            <button id="clearBtn" class="btn btn-danger">清空</button>
+            <button id="saveBtn" class="btn btn-success">保存Mask</button>
+            
+            <div class="slider-container">
+                <label>画笔大小:</label>
+                <input type="range" id="brushSize" class="slider" min="1" max="50" value="10">
+                <span id="brushSizeValue">10</span>
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 20px;">
+            <div style="flex: 1;">
+                <div class="canvas-container">
+                    <canvas id="canvas" width="800" height="600"></canvas>
+                </div>
+                
+                <div class="info-panel">
+                    <h4>操作说明:</h4>
+                    <ul>
+                        <li><strong>多边形模式:</strong> 左键点击添加顶点，右键或双击完成多边形</li>
+                        <li><strong>画笔模式:</strong> 按住左键拖动绘制</li>
+                        <li><strong>擦除模式:</strong> 按住左键拖动擦除</li>
+                        <li><strong>快捷键:</strong> Ctrl+Z撤销, Ctrl+S保存</li>
+                    </ul>
+                    <div id="stats"></div>
+                </div>
+            </div>
+            
+            <div style="width: 300px;">
+                <h4>图片列表</h4>
+                <div id="imageList" class="image-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class SimpleAnnotationTool {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.currentImage = null;
+                this.images = [];
+                this.currentImageIndex = -1;
+                
+                // 编辑状态
+                this.mode = 'polygon'; // 'polygon', 'brush', 'erase'
+                this.isDrawing = false;
+                this.brushSize = 10;
+                
+                // 多边形
+                this.polygonPoints = [];
+                
+                // 历史记录
+                this.history = [];
+                this.historyIndex = -1;
+                
+                this.init();
+            }
+            
+            init() {
+                this.setupEventListeners();
+                this.loadImages();
+            }
+            
+            setupEventListeners() {
+                // 画布事件
+                this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
+                this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
+                this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
+                this.canvas.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    if (this.mode === 'polygon') {
+                        this.finishPolygon();
+                    }
+                });
+                this.canvas.addEventListener('dblclick', (e) => {
+                    if (this.mode === 'polygon') {
+                        this.finishPolygon();
+                    }
+                });
+                
+                // 按钮事件
+                document.getElementById('polygonBtn').addEventListener('click', () => this.setMode('polygon'));
+                document.getElementById('brushBtn').addEventListener('click', () => this.setMode('brush'));
+                document.getElementById('eraseBtn').addEventListener('click', () => this.setMode('erase'));
+                document.getElementById('clearBtn').addEventListener('click', () => this.clearCanvas());
+                document.getElementById('saveBtn').addEventListener('click', () => this.saveMask());
+                
+                // 画笔大小
+                const brushSizeSlider = document.getElementById('brushSize');
+                brushSizeSlider.addEventListener('input', (e) => {
+                    this.brushSize = parseInt(e.target.value);
+                    document.getElementById('brushSizeValue').textContent = this.brushSize;
+                });
+                
+                // 快捷键
+                document.addEventListener('keydown', (e) => {
+                    if (e.ctrlKey && e.key === 'z') {
+                        e.preventDefault();
+                        this.undo();
+                    } else if (e.ctrlKey && e.key === 's') {
+                        e.preventDefault();
+                        this.saveMask();
+                    }
+                });
+            }
+            
+            async loadImages() {
+                try {
+                    const response = await fetch('/api/images');
+                    this.images = await response.json();
+                    this.renderImageList();
+                    
+                    if (this.images.length > 0) {
+                        this.loadImage(0);
+                    }
+                } catch (error) {
+                    console.error('加载图片列表失败:', error);
+                    this.showNotification('加载图片列表失败', 'error');
+                }
+            }
+            
+            renderImageList() {
+                const imageList = document.getElementById('imageList');
+                imageList.innerHTML = '';
+                
+                this.images.forEach((image, index) => {
+                    const item = document.createElement('div');
+                    item.className = `image-item ${image.has_mask ? 'has-mask' : ''}`;
+                    item.textContent = image.filename;
+                    item.addEventListener('click', () => this.loadImage(index));
+                    imageList.appendChild(item);
+                });
+            }
+            
+            async loadImage(index) {
+                if (index < 0 || index >= this.images.length) return;
+                
+                this.currentImageIndex = index;
+                const image = this.images[index];
+                
+                // 更新UI
+                document.querySelectorAll('.image-item').forEach((item, i) => {
+                    item.classList.toggle('active', i === index);
+                });
+                
+                document.getElementById('imageInfo').textContent = 
+                    `${image.filename} (${index + 1}/${this.images.length})`;
+                
+                // 加载图片
+                const img = new Image();
+                img.onload = () => {
+                    this.currentImage = img;
+                    this.resizeCanvas();
+                    this.clearCanvas();
+                    this.redraw();
+                    
+                    // 加载已存在的mask
+                    if (image.has_mask) {
+                        this.loadExistingMask(image.filename);
+                    }
+                };
+                img.src = `/images/${image.filename}`;
+            }
+            
+            resizeCanvas() {
+                if (!this.currentImage) return;
+                
+                const maxWidth = 800;
+                const maxHeight = 600;
+                const scale = Math.min(maxWidth / this.currentImage.width, maxHeight / this.currentImage.height);
+                
+                this.canvas.width = this.currentImage.width * scale;
+                this.canvas.height = this.currentImage.height * scale;
+                this.scale = scale;
+            }
+            
+            async loadExistingMask(filename) {
+                try {
+                    const response = await fetch(`/api/load_mask/${filename}`);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const img = new Image();
+                        img.onload = () => {
+                            // 将红色像素转换为绿色
+                            const tempCanvas = document.createElement('canvas');
+                            tempCanvas.width = img.width;
+                            tempCanvas.height = img.height;
+                            const tempCtx = tempCanvas.getContext('2d');
+                            
+                            tempCtx.drawImage(img, 0, 0);
+                            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                            const data = imageData.data;
+                            
+                            // 将红色像素转换为绿色
+                            for (let i = 0; i < data.length; i += 4) {
+                                if (data[i + 2] > 128 && data[i] < 100 && data[i + 1] < 100) { // 红色像素
+                                    data[i] = 0;     // R = 0
+                                    data[i + 1] = 255; // G = 255
+                                    data[i + 2] = 0;   // B = 0
+                                }
+                            }
+                            
+                            tempCtx.putImageData(imageData, 0, 0);
+                            
+                            // 绘制到主画布
+                            this.ctx.drawImage(tempCanvas, 0, 0, this.canvas.width, this.canvas.height);
+                            this.saveToHistory();
+                        };
+                        img.src = data.mask_data;
+                    }
+                } catch (error) {
+                    console.error('加载mask失败:', error);
+                }
+            }
+            
+            setMode(mode) {
+                this.mode = mode;
+                this.polygonPoints = [];
+                
+                document.querySelectorAll('.btn').forEach(btn => btn.classList.remove('btn-primary'));
+                document.getElementById(mode + 'Btn').classList.add('btn-primary');
+                
+                this.canvas.style.cursor = mode === 'polygon' ? 'crosshair' : 'default';
+                this.redraw();
+            }
+            
+            getMousePos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                return {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+            }
+            
+            onMouseDown(e) {
+                if (e.button !== 0) return; // 只处理左键
+                
+                const pos = this.getMousePos(e);
+                
+                if (this.mode === 'polygon') {
+                    this.polygonPoints.push(pos);
+                    this.redraw();
+                } else if (this.mode === 'brush' || this.mode === 'erase') {
+                    this.isDrawing = true;
+                    this.saveToHistory();
+                    this.drawBrush(pos.x, pos.y);
+                }
+            }
+            
+            onMouseMove(e) {
+                const pos = this.getMousePos(e);
+                
+                if (this.isDrawing && (this.mode === 'brush' || this.mode === 'erase')) {
+                    this.drawBrush(pos.x, pos.y);
+                }
+            }
+            
+            onMouseUp(e) {
+                this.isDrawing = false;
+            }
+            
+            drawBrush(x, y) {
+                this.ctx.globalCompositeOperation = this.mode === 'erase' ? 'destination-out' : 'source-over';
+                this.ctx.fillStyle = '#00FF00';
+                this.ctx.beginPath();
+                this.ctx.arc(x, y, this.brushSize, 0, 2 * Math.PI);
+                this.ctx.fill();
+            }
+            
+            finishPolygon() {
+                if (this.polygonPoints.length < 3) return;
+                
+                this.saveToHistory();
+                
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.fillStyle = '#00FF00';
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
+                
+                for (let i = 1; i < this.polygonPoints.length; i++) {
+                    this.ctx.lineTo(this.polygonPoints[i].x, this.polygonPoints[i].y);
+                }
+                
+                this.ctx.closePath();
+                this.ctx.fill();
+                
+                this.polygonPoints = [];
+                this.redraw();
+            }
+            
+            redraw() {
+                if (!this.currentImage) return;
+                
+                // 保存当前mask内容
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                
+                // 清除并重绘背景
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.drawImage(this.currentImage, 0, 0, this.canvas.width, this.canvas.height);
+                
+                // 恢复mask（绿色半透明）
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.globalAlpha = 0.6;
+                this.ctx.putImageData(imageData, 0, 0);
+                this.ctx.globalAlpha = 1.0;
+                
+                // 绘制当前多边形
+                if (this.mode === 'polygon' && this.polygonPoints.length > 0) {
+                    this.ctx.strokeStyle = '#FFFF00';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.setLineDash([5, 5]);
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
+                    for (let i = 1; i < this.polygonPoints.length; i++) {
+                        this.ctx.lineTo(this.polygonPoints[i].x, this.polygonPoints[i].y);
+                    }
+                    this.ctx.stroke();
+                    this.ctx.setLineDash([]);
+                    
+                    // 绘制点
+                    this.ctx.fillStyle = '#FFFF00';
+                    for (let point of this.polygonPoints) {
+                        this.ctx.beginPath();
+                        this.ctx.arc(point.x, point.y, 3, 0, 2 * Math.PI);
+                        this.ctx.fill();
+                    }
+                }
+            }
+            
+            clearCanvas() {
+                this.saveToHistory();
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                if (this.currentImage) {
+                    this.ctx.drawImage(this.currentImage, 0, 0, this.canvas.width, this.canvas.height);
+                }
+                this.polygonPoints = [];
+            }
+            
+            saveToHistory() {
+                // 移除当前位置之后的历史
+                this.history = this.history.slice(0, this.historyIndex + 1);
+                
+                // 添加当前状态
+                const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                this.history.push(imageData);
+                this.historyIndex++;
+                
+                // 限制历史长度
+                if (this.history.length > 20) {
+                    this.history.shift();
+                    this.historyIndex--;
+                }
+            }
+            
+            undo() {
+                if (this.historyIndex > 0) {
+                    this.historyIndex--;
+                    this.ctx.putImageData(this.history[this.historyIndex], 0, 0);
+                    this.showNotification('撤销成功', 'info');
+                }
+            }
+            
+            async saveMask() {
+                if (this.currentImageIndex < 0) {
+                    this.showNotification('请先选择图片', 'error');
+                    return;
+                }
+                
+                try {
+                    const image = this.images[this.currentImageIndex];
+                    const dataUrl = this.canvas.toDataURL('image/png');
+                    
+                    const response = await fetch('/api/save_mask', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            image_filename: image.filename,
+                            mask_data: dataUrl
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.showNotification('Mask保存成功', 'success');
+                        
+                        // 更新图片状态
+                        this.images[this.currentImageIndex].has_mask = true;
+                        this.renderImageList();
+                        
+                        // 显示统计信息
+                        const stats = result.stats;
+                        document.getElementById('stats').innerHTML = `
+                            <strong>统计信息:</strong><br>
+                            可驾驶区域像素: ${stats.drivable_pixels}<br>
+                            总像素: ${stats.total_pixels}<br>
+                            可驾驶比例: ${(stats.drivable_ratio * 100).toFixed(2)}%
+                        `;
+                    } else {
+                        this.showNotification(`保存失败: ${result.message}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('保存mask失败:', error);
+                    this.showNotification('保存失败', 'error');
+                }
+            }
+            
+            showNotification(message, type = 'info') {
+                const notification = document.createElement('div');
+                notification.className = `notification ${type}`;
+                notification.textContent = message;
+                document.body.appendChild(notification);
+                
+                setTimeout(() => {
+                    notification.remove();
+                }, 3000);
+            }
+        }
+        
+        // 启动应用
+        document.addEventListener('DOMContentLoaded', () => {
+            new SimpleAnnotationTool();
+        });
+    </script>
+</body>
+</html>
