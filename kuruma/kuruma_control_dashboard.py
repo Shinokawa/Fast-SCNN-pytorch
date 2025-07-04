@@ -41,6 +41,17 @@ import logging
 from pathlib import Path
 from threading import Thread, Lock
 import queue
+import base64
+import io
+from datetime import datetime
+
+# Web界面相关导入
+try:
+    from flask import Flask, render_template_string, jsonify, request
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    print("⚠️ Flask未安装，Web界面功能不可用")
 
 # 导入scipy用于路径平滑
 try:
@@ -150,7 +161,7 @@ def get_corrected_calibration():
     # 重新计算透视变换矩阵
     # 从640×360图像角点到校正后的世界坐标
     src_points = np.float32([[0, 0], [639, 0], [639, 359], [0, 359]])
-    dst_points = np.float32(corrected_world_corners)
+    dst_points = np.float32(corrected_world_corners);
     
     transform_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
     inverse_transform_matrix = cv2.getPerspectiveTransform(dst_points, src_points)
@@ -1803,9 +1814,6 @@ def world_to_pixels(world_points, view_params):
     
     return pixel_points
 
-# ---------------------------------------------------------------------------------
-# --- 📱 命令行接口 ---
-# ---------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------------
 # --- 🚀 实时推理模块 (摄像头模式) ---
@@ -1833,7 +1841,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       log_file=None, enable_control=True,
                       steering_gain=1.0, base_speed=10.0, 
                       curvature_damping=0.1, preview_distance=30.0,
-                      max_speed=20.0, min_speed=5.0):
+                      max_speed=20.0, min_speed=5.0,
+                      enable_web=False, no_gui=False):
     """
     实时摄像头推理模式
     
@@ -1845,6 +1854,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         camera_height: 摄像头高度
         log_file: 日志文件路径
         enable_control: 是否启用控制算法
+        enable_web: 是否启用Web界面数据更新
+        no_gui: 是否禁用GUI显示
         其他: 控制参数
     """
     # 配置日志
@@ -1903,6 +1914,14 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
     # 透视变换器
     transformer = PerspectiveTransformer()
     logger.info("🦅 透视变换器初始化完成")
+    
+    # 初始化Web界面数据
+    if enable_web:
+        with web_data_lock:
+            web_data['is_running'] = True
+            web_data['start_time'] = time.time()
+            web_data['frame_count'] = 0
+        logger.info("🌐 Web界面数据初始化完成")
     
     frame_count = 0
     start_time = time.time()
@@ -2004,10 +2023,33 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             else:
                 logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%")
             
-            # ESC键退出
-            if cv2.waitKey(1) & 0xFF == 27:  # ESC键
-                logger.info("🛑 用户按ESC键退出")
-                break
+            # 更新Web界面数据
+            if enable_web:
+                with web_data_lock:
+                    web_data['frame_count'] = frame_count
+                    web_data['latest_control_map'] = control_map.copy() if control_map is not None else None
+                    web_data['latest_stats'] = {
+                        'latency': pipeline_latency,
+                        'lane_ratio': lane_ratio,
+                        'left_pwm': control_result['left_wheel_pwm'] if control_result else 0,
+                        'right_pwm': control_result['right_wheel_pwm'] if control_result else 0,
+                        'lateral_error': control_result['lateral_error'] if control_result else 0,
+                        'path_curvature': control_result['path_curvature'] if control_result else 0
+                    }
+            
+            # 检测退出条件（仅在有GUI时检查按键）
+            if not no_gui:
+                try:
+                    if cv2.waitKey(1) & 0xFF == 27:  # ESC键
+                        logger.info("🛑 用户按ESC键退出")
+                        break
+                except cv2.error:
+                    # 如果OpenCV GUI不可用，忽略错误
+                    logger.warning("⚠️ OpenCV GUI不可用，无法检测按键")
+                    no_gui = True  # 自动切换到无GUI模式
+            else:
+                # 无GUI模式下可以通过其他方式退出，例如文件标志
+                time.sleep(0.001)  # 短暂休眠避免过度占用CPU
                 
     except KeyboardInterrupt:
         logger.info("🛑 用户中断 (Ctrl+C)")
@@ -2016,9 +2058,299 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         import traceback
         logger.error(traceback.format_exc())
     finally:
+        # 更新Web界面状态
+        if enable_web:
+            with web_data_lock:
+                web_data['is_running'] = False
+                
         cap.release()
-        cv2.destroyAllWindows()
+        
+        # 仅在非无GUI模式下调用OpenCV GUI函数
+        if not no_gui:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                # 忽略OpenCV GUI相关错误
+                pass
+                
         logger.info("🔚 实时推理系统已关闭")
+
+# ---------------------------------------------------------------------------------
+# --- 🌐 Web界面模块 ---
+# ---------------------------------------------------------------------------------
+
+# Web界面相关全局变量
+web_data = {
+    'latest_frame': None,
+    'latest_control_map': None,
+    'latest_stats': {},
+    'is_running': False,
+    'frame_count': 0,
+    'start_time': None
+}
+web_data_lock = Lock()
+
+# HTML模板
+WEB_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>实时车道线分割控制台</title>
+    <meta charset="utf-8">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            background: #1a1a1a; 
+            color: #fff; 
+            margin: 0; 
+            padding: 20px; 
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+        }
+        .header { 
+            text-align: center; 
+            margin-bottom: 30px; 
+            padding: 20px; 
+            background: #2d2d2d; 
+            border-radius: 10px; 
+        }
+        .stats-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #ccc;
+        }
+        .image-panel {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .control-map {
+            max-width: 100%;
+            border: 2px solid #4CAF50;
+            border-radius: 8px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-running { background: #4CAF50; }
+        .status-stopped { background: #f44336; }
+        .log-panel {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚗 实时车道线分割控制台</h1>
+            <p>
+                <span id="status-indicator" class="status-indicator status-stopped"></span>
+                <span id="status-text">系统停止</span>
+            </p>
+        </div>
+        
+        <div class="stats-panel">
+            <div class="stat-card">
+                <div class="stat-value" id="frame-count">0</div>
+                <div class="stat-label">帧数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="fps">0.0</div>
+                <div class="stat-label">FPS</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="latency">0</div>
+                <div class="stat-label">延迟(ms)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="lane-ratio">0.0</div>
+                <div class="stat-label">车道线覆盖率(%)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="left-pwm">0</div>
+                <div class="stat-label">左轮PWM</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="right-pwm">0</div>
+                <div class="stat-label">右轮PWM</div>
+            </div>
+        </div>
+        
+        <div class="image-panel">
+            <h3>🗺️ 实时控制地图</h3>
+            <img id="control-map" class="control-map" src="/api/control_map" alt="控制地图加载中...">
+        </div>
+        
+        <div class="log-panel">
+            <h3>📋 系统日志</h3>
+            <div id="log-content"></div>
+        </div>
+    </div>
+    
+    <script>
+        let logEntries = [];
+        const maxLogEntries = 50;
+        
+        function updateStats() {
+            fetch('/api/stats')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('frame-count').textContent = data.frame_count || 0;
+                document.getElementById('fps').textContent = (data.fps || 0).toFixed(1);
+                document.getElementById('latency').textContent = Math.round(data.latency || 0);
+                document.getElementById('lane-ratio').textContent = (data.lane_ratio || 0).toFixed(1);
+                document.getElementById('left-pwm').textContent = Math.round(data.left_pwm || 0);
+                document.getElementById('right-pwm').textContent = Math.round(data.right_pwm || 0);
+                
+                // 更新状态指示器
+                const statusIndicator = document.getElementById('status-indicator');
+                const statusText = document.getElementById('status-text');
+                if (data.is_running) {
+                    statusIndicator.className = 'status-indicator status-running';
+                    statusText.textContent = '系统运行中';
+                } else {
+                    statusIndicator.className = 'status-indicator status-stopped';
+                    statusText.textContent = '系统停止';
+                }
+                
+                // 添加新日志条目
+                if (data.latest_log) {
+                    addLogEntry(data.latest_log);
+                }
+            })
+            .catch(error => console.error('获取状态失败:', error));
+        }
+        
+        function addLogEntry(logText) {
+            const timestamp = new Date().toLocaleTimeString();
+            logEntries.push(`[${timestamp}] ${logText}`);
+            if (logEntries.length > maxLogEntries) {
+                logEntries.shift();
+            }
+            
+            const logContent = document.getElementById('log-content');
+            logContent.innerHTML = logEntries.map(entry => 
+                `<div class="log-entry">${entry}</div>`
+            ).join('');
+            logContent.scrollTop = logContent.scrollHeight;
+        }
+        
+        // 定期更新控制地图
+        function updateControlMap() {
+            const img = document.getElementById('control-map');
+            img.src = '/api/control_map?' + new Date().getTime();
+        }
+        
+        // 启动定时更新
+        setInterval(updateStats, 1000);  // 每秒更新状态
+        setInterval(updateControlMap, 2000);  // 每2秒更新控制地图
+        
+        // 初始加载
+        updateStats();
+    </script>
+</body>
+</html>
+"""
+
+def create_web_app():
+    """创建Flask Web应用"""
+    if not FLASK_AVAILABLE:
+        return None
+    
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def index():
+        return render_template_string(WEB_TEMPLATE)
+    
+    @app.route('/api/stats')
+    def get_stats():
+        with web_data_lock:
+            stats = web_data['latest_stats'].copy()
+            stats['is_running'] = web_data['is_running']
+            stats['frame_count'] = web_data['frame_count']
+            
+            # 计算FPS
+            if web_data['start_time'] and web_data['frame_count'] > 0:
+                elapsed = time.time() - web_data['start_time']
+                stats['fps'] = web_data['frame_count'] / elapsed if elapsed > 0 else 0
+            else:
+                stats['fps'] = 0
+        
+        return jsonify(stats)
+    
+    @app.route('/api/control_map')
+    def get_control_map():
+        with web_data_lock:
+            if web_data['latest_control_map'] is not None:
+                # 将OpenCV图像转换为PNG格式的base64
+                _, buffer = cv2.imencode('.png', web_data['latest_control_map'])
+                img_data = base64.b64encode(buffer).decode('utf-8')
+                return f"data:image/png;base64,{img_data}"
+            else:
+                # 返回空图片占位符
+                empty_img = np.zeros((300, 400, 3), dtype=np.uint8)
+                cv2.putText(empty_img, "No Control Map", (50, 150), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                _, buffer = cv2.imencode('.png', empty_img)
+                img_data = base64.b64encode(buffer).decode('utf-8')
+                return f"data:image/png;base64,{img_data}"
+    
+    return app
+
+def start_web_server(port=5000):
+    """启动Web服务器"""
+    if not FLASK_AVAILABLE:
+        print("❌ Flask未安装，无法启动Web服务器")
+        return None
+    
+    app = create_web_app()
+    if app is None:
+        return None
+    
+    def run_server():
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    
+    server_thread = Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    print(f"🌐 Web界面已启动: http://localhost:{port}")
+    print(f"🌐 外部访问: http://0.0.0.0:{port}")
+    
+    return server_thread
 
 # ---------------------------------------------------------------------------------
 # --- 📱 命令行接口 ---
@@ -2071,6 +2403,11 @@ def main():
     parser.add_argument("--max_speed", type=float, default=800.0, help="最大PWM值 -1000~+1000 (默认: 800)")
     parser.add_argument("--min_speed", type=float, default=100.0, help="最小PWM值，前进时最低速度 (默认: 100)")
     
+    # Web界面和GUI选项
+    parser.add_argument("--web", action="store_true", help="启用Web界面")
+    parser.add_argument("--web_port", type=int, default=5000, help="Web界面端口 (默认: 5000)")
+    parser.add_argument("--no_gui", action="store_true", help="无GUI模式（不显示OpenCV窗口，仅输出结果）")
+    
     args = parser.parse_args()
     
     try:
@@ -2084,6 +2421,16 @@ def main():
         # 实时模式
         if args.realtime:
             print("🎬 启动实时摄像头推理模式")
+            
+            # 启动Web服务器（如果需要）
+            web_server = None
+            if args.web:
+                print("🌐 启动Web界面...")
+                web_server = start_web_server(args.web_port)
+                time.sleep(2)  # 等待服务器启动
+                if args.no_gui:
+                    print("💡 提示：无GUI模式下，请通过Web界面查看实时状态")
+            
             realtime_inference(
                 model_path=args.model,
                 device_id=args.device_id,
@@ -2097,7 +2444,9 @@ def main():
                 curvature_damping=args.curvature_damping,
                 preview_distance=args.preview_distance,
                 max_speed=args.max_speed,
-                min_speed=args.min_speed
+                min_speed=args.min_speed,
+                enable_web=args.web,
+                no_gui=args.no_gui
             )
             return
         
