@@ -369,7 +369,8 @@ def inference_single_image(image_path, model_path, device_id=0,
                           num_waypoints=20, min_road_width=10, edge_computing=False,
                           force_bottom_center=True, enable_control=False, 
                           steering_gain=1.0, base_speed=10.0, curvature_damping=0.1, 
-                          preview_distance=30.0, max_speed=1000.0, min_speed=5.0):
+                          preview_distance=30.0, max_speed=1000.0, min_speed=5.0,
+                          ema_alpha=0.5, enable_smoothing=True):
     """
     集成车道线分割推理和透视变换的完整感知管道 - Atlas版本
     
@@ -572,7 +573,9 @@ def inference_single_image(image_path, model_path, device_id=0,
             curvature_damping=curvature_damping,
             preview_distance=preview_distance,
             max_pwm=int(max_speed),    # 重命名参数映射，转换为int
-            min_pwm=int(min_speed)     # 重命名参数映射，转换为int
+            min_pwm=int(min_speed),    # 重命名参数映射，转换为int
+            ema_alpha=ema_alpha,       # EMA平滑系数
+            enable_smoothing=enable_smoothing  # 是否启用平滑
         )
         
         # 计算控制指令
@@ -1344,7 +1347,8 @@ class VisualLateralErrorController:
     """
     
     def __init__(self, steering_gain=50.0, base_pwm=300, curvature_damping=0.1, 
-                 preview_distance=30.0, max_pwm=1000, min_pwm=100):
+                 preview_distance=30.0, max_pwm=1000, min_pwm=100, 
+                 ema_alpha=0.5, enable_smoothing=True):
         """
         初始化控制器参数
         
@@ -1355,6 +1359,8 @@ class VisualLateralErrorController:
             preview_distance: 预瞄距离（cm，控制点距离机器人的距离）
             max_pwm: 最大PWM值（-1000到+1000范围）
             min_pwm: 最小PWM值（-1000到+1000范围，用于前进时的最低速度）
+            ema_alpha: EMA平滑系数（0-1，越大越灵敏，越小越平滑）
+            enable_smoothing: 是否启用控制指令平滑
         """
         self.steering_gain = steering_gain
         self.base_pwm = base_pwm
@@ -1362,6 +1368,14 @@ class VisualLateralErrorController:
         self.preview_distance = preview_distance
         self.max_pwm = max_pwm
         self.min_pwm = min_pwm
+        self.ema_alpha = ema_alpha
+        self.enable_smoothing = enable_smoothing
+        
+        # EMA时间平滑状态
+        self.ema_pwm_left = None
+        self.ema_pwm_right = None
+        self.ema_lateral_error = None
+        self.ema_steering_adjustment = None
         
         # 性能统计
         self.control_history = []
@@ -1372,6 +1386,7 @@ class VisualLateralErrorController:
         print(f"   🌊 曲率阻尼: {curvature_damping}")
         print(f"   👁️ 预瞄距离: {preview_distance} cm")
         print(f"   ⚡ PWM范围: {min_pwm} ~ {max_pwm} (支持双向旋转)")
+        print(f"   🔄 EMA平滑: {'启用' if enable_smoothing else '禁用'} (α={ema_alpha})")
     
     def calculate_lateral_error(self, path_data, view_params):
         """
@@ -1465,7 +1480,13 @@ class VisualLateralErrorController:
         pwm_right = np.clip(pwm_right, -1000, 1000)
         pwm_left = np.clip(pwm_left, -1000, 1000)
         
-        # 构建控制结果
+        # 应用EMA时间平滑（如果启用）
+        if self.enable_smoothing:
+            pwm_left, pwm_right, lateral_error, steering_adjustment = self._apply_ema_smoothing(
+                pwm_left, pwm_right, lateral_error, steering_adjustment
+            )
+        
+        # 构建控制结果（使用平滑后的值）
         control_result = {
             'lateral_error': lateral_error,
             'car_position': car_position,
@@ -1481,7 +1502,10 @@ class VisualLateralErrorController:
             'dynamic_speed': dynamic_pwm,  # 映射到PWM
             'speed_right': pwm_right,      # 映射到PWM
             'speed_left': pwm_left,        # 映射到PWM
-            'speed_reduction_factor': self.base_pwm / dynamic_pwm if dynamic_pwm > 0 else 1.0
+            'speed_reduction_factor': self.base_pwm / dynamic_pwm if dynamic_pwm > 0 else 1.0,
+            # EMA平滑状态信息
+            'smoothing_enabled': self.enable_smoothing,
+            'ema_alpha': self.ema_alpha
         }
         
         # 记录控制历史
@@ -1489,6 +1513,71 @@ class VisualLateralErrorController:
         
         return control_result
     
+    def _apply_ema_smoothing(self, pwm_left, pwm_right, lateral_error, steering_adjustment):
+        """
+        应用EMA (Exponential Moving Average) 时间平滑
+        
+        EMA公式: S_t = α * Y_t + (1 - α) * S_{t-1}
+        其中：
+        - S_t: 当前时刻的平滑值
+        - Y_t: 当前时刻的观测值  
+        - α: 平滑系数 (0 < α ≤ 1)
+        - α 越大越灵敏，α 越小越平滑
+        
+        参数：
+            pwm_left: 当前左轮PWM值
+            pwm_right: 当前右轮PWM值
+            lateral_error: 当前横向误差
+            steering_adjustment: 当前转向调整量
+            
+        返回：
+            smoothed_pwm_left, smoothed_pwm_right, smoothed_lateral_error, smoothed_steering_adjustment
+        """
+        # 初始化EMA状态（首次调用）
+        if self.ema_pwm_left is None:
+            self.ema_pwm_left = pwm_left
+            self.ema_pwm_right = pwm_right
+            self.ema_lateral_error = lateral_error
+            self.ema_steering_adjustment = steering_adjustment
+            return pwm_left, pwm_right, lateral_error, steering_adjustment
+        
+        # 应用EMA平滑
+        self.ema_pwm_left = self.ema_alpha * pwm_left + (1 - self.ema_alpha) * self.ema_pwm_left
+        self.ema_pwm_right = self.ema_alpha * pwm_right + (1 - self.ema_alpha) * self.ema_pwm_right
+        self.ema_lateral_error = self.ema_alpha * lateral_error + (1 - self.ema_alpha) * self.ema_lateral_error
+        self.ema_steering_adjustment = self.ema_alpha * steering_adjustment + (1 - self.ema_alpha) * self.ema_steering_adjustment
+        
+        return self.ema_pwm_left, self.ema_pwm_right, self.ema_lateral_error, self.ema_steering_adjustment
+    
+    def reset_ema_state(self):
+        """
+        重置EMA平滑状态（用于重新开始控制或紧急停车后恢复）
+        """
+        self.ema_pwm_left = None
+        self.ema_pwm_right = None
+        self.ema_lateral_error = None
+        self.ema_steering_adjustment = None
+        print("🔄 EMA平滑状态已重置")
+    
+    def update_smoothing_params(self, ema_alpha=None, enable_smoothing=None):
+        """
+        动态更新EMA平滑参数（支持热更新）
+        
+        参数：
+            ema_alpha: 新的EMA平滑系数
+            enable_smoothing: 是否启用平滑
+        """
+        if ema_alpha is not None:
+            self.ema_alpha = max(0.1, min(1.0, ema_alpha))  # 限制在0.1-1.0范围
+            print(f"🔄 EMA平滑系数已更新: α={self.ema_alpha}")
+        
+        if enable_smoothing is not None:
+            old_state = self.enable_smoothing
+            self.enable_smoothing = enable_smoothing
+            if not enable_smoothing and old_state:
+                self.reset_ema_state()  # 禁用平滑时重置状态
+            print(f"🔄 EMA平滑{'启用' if enable_smoothing else '禁用'}")
+
     def _get_car_position_world(self, view_params):
         """
         获取机器人在世界坐标系中的当前位置（图像底部中心点）
@@ -1852,7 +1941,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       curvature_damping=0.1, preview_distance=30.0,
                       max_speed=1000.0, min_speed=5.0,
                       enable_web=False, no_gui=False, full_image_bird_eye=True,
-                      edge_computing=False, pixels_per_unit=20, margin_ratio=0.1):
+                      edge_computing=False, pixels_per_unit=20, margin_ratio=0.1,
+                      ema_alpha=0.5, enable_smoothing=True):
     """
     实时摄像头推理模式
     
@@ -1912,7 +2002,9 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             curvature_damping=curvature_damping,
             preview_distance=preview_distance,
             max_pwm=int(max_speed),
-            min_pwm=int(min_speed)
+            min_pwm=int(min_speed),
+            ema_alpha=ema_alpha,
+            enable_smoothing=enable_smoothing
         )
         logger.info("🚗 控制器初始化完成")
     else:
@@ -2012,15 +2104,36 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         controller.preview_distance = new_params['preview_distance']
                         controller.curvature_damping = new_params['curvature_damping']
                         
+                        # 应用EMA平滑参数（如果有）
+                        if 'ema_alpha' in new_params:
+                            controller.update_smoothing_params(
+                                ema_alpha=new_params['ema_alpha'],
+                                enable_smoothing=new_params.get('enable_smoothing', controller.enable_smoothing)
+                            )
+                        
                         web_data['params_updated'] = False  # 重置标志
                         print(f"🎛️ 控制参数已更新: 转向增益={controller.steering_gain}, "
                               f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm, "
-                              f"阻尼系数={controller.curvature_damping}")
+                              f"阻尼系数={controller.curvature_damping}, EMA平滑={'启用' if controller.enable_smoothing else '禁用'}(α={controller.ema_alpha})")
             
             # 5. 控制计算
             control_time = 0
             control_result = None
             if enable_control and path_data is not None and controller is not None:
+                # 检查是否需要重置EMA状态（例如从紧急停车恢复或刚开始行驶）
+                with web_data_lock:
+                    if (web_data.get('car_driving', False) and 
+                        not web_data.get('emergency_stop', False) and
+                        hasattr(controller, 'ema_pwm_left') and 
+                        controller.ema_pwm_left is None):
+                        # 如果刚开始行驶且EMA状态未初始化，则需要准备接受新的控制
+                        print("🔄 开始行驾，EMA平滑器准备就绪")
+                    elif web_data.get('emergency_stop', False):
+                        # 紧急停车状态，重置EMA状态以避免残留影响
+                        if hasattr(controller, 'reset_ema_state'):
+                            controller.reset_ema_state()
+                            print("🛑 紧急停车状态，EMA状态已重置")
+                
                 control_start = time.time()
                 control_result = controller.compute_wheel_pwm(path_data, view_params)
                 control_time = (time.time() - control_start) * 1000
@@ -2463,6 +2576,47 @@ WEB_TEMPLATE = """
             cursor: not-allowed;
             transform: none;
         }
+        
+        /* 开关按钮样式 */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #4CAF50;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
     </style>
 </head>
 <body>
@@ -2527,6 +2681,20 @@ WEB_TEMPLATE = """
                 <input type="range" class="param-slider" id="curvature-damping-slider" 
                        min="0.01" max="1.0" step="0.01" value="0.1">
                 <span class="param-value" id="curvature-damping-value">0.1</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">EMA平滑系数</span>
+                <input type="range" class="param-slider" id="ema-alpha-slider" 
+                       min="0.1" max="1.0" step="0.01" value="0.5">
+                <span class="param-value" id="ema-alpha-value">0.5</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">启用平滑</span>
+                <label class="switch">
+                    <input type="checkbox" id="enable-smoothing-checkbox" checked>
+                    <span class="slider"></span>
+                </label>
+                <span class="param-value" id="enable-smoothing-value">启用</span>
             </div>
             <div style="text-align: center; margin-top: 15px;">
                 <button class="param-apply" onclick="applyParameters()">应用参数</button>
@@ -2640,6 +2808,14 @@ WEB_TEMPLATE = """
             const curvatureDamping = document.getElementById('curvature-damping-slider');
             const dampingValue = document.getElementById('curvature-damping-value');
             dampingValue.textContent = parseFloat(curvatureDamping.value).toFixed(2);
+            
+            const emaAlpha = document.getElementById('ema-alpha-slider');
+            const emaValue = document.getElementById('ema-alpha-value');
+            emaValue.textContent = parseFloat(emaAlpha.value).toFixed(2);
+            
+            const enableSmoothing = document.getElementById('enable-smoothing-checkbox');
+            const smoothingValue = document.getElementById('enable-smoothing-value');
+            smoothingValue.textContent = enableSmoothing.checked ? '启用' : '禁用';
         }
         
         // 应用参数到系统
@@ -2648,12 +2824,16 @@ WEB_TEMPLATE = """
             const baseSpeed = document.getElementById('base-speed-slider').value;
             const previewDistance = document.getElementById('preview-distance-slider').value;
             const curvatureDamping = document.getElementById('curvature-damping-slider').value;
+            const emaAlpha = document.getElementById('ema-alpha-slider').value;
+            const enableSmoothing = document.getElementById('enable-smoothing-checkbox').checked;
             
             const params = {
                 steering_gain: parseFloat(steeringGain),
                 base_speed: parseFloat(baseSpeed),
                 preview_distance: parseFloat(previewDistance),
-                curvature_damping: parseFloat(curvatureDamping)
+                curvature_damping: parseFloat(curvatureDamping),
+                ema_alpha: parseFloat(emaAlpha),
+                enable_smoothing: enableSmoothing
             };
             
             fetch('/api/update_params', {
@@ -2666,7 +2846,7 @@ WEB_TEMPLATE = """
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    addLogEntry(`参数更新成功: 转向增益=${steeringGain}, 基础PWM=${baseSpeed}, 预瞄距离=${previewDistance}cm, 阻尼系数=${curvatureDamping}`);
+                    addLogEntry(`参数更新成功: 转向增益=${steeringGain}, 基础PWM=${baseSpeed}, 预瞄距离=${previewDistance}cm, 阻尼系数=${curvatureDamping}, EMA平滑=${enableSmoothing ? '启用' : '禁用'}(α=${emaAlpha})`);
                 } else {
                     addLogEntry(`参数更新失败: ${data.error}`);
                 }
@@ -2805,6 +2985,8 @@ WEB_TEMPLATE = """
         document.getElementById('base-speed-slider').addEventListener('input', updateSliderValues);
         document.getElementById('preview-distance-slider').addEventListener('input', updateSliderValues);
         document.getElementById('curvature-damping-slider').addEventListener('input', updateSliderValues);
+        document.getElementById('ema-alpha-slider').addEventListener('input', updateSliderValues);
+        document.getElementById('enable-smoothing-checkbox').addEventListener('change', updateSliderValues);
         
         // 启动定时更新
         setInterval(updateStats, 1000);  // 每秒更新状态
@@ -2869,6 +3051,10 @@ def create_web_app():
                     web_data['control_params']['preview_distance'] = float(params['preview_distance'])
                 if 'curvature_damping' in params:
                     web_data['control_params']['curvature_damping'] = float(params['curvature_damping'])
+                if 'ema_alpha' in params:
+                    web_data['control_params']['ema_alpha'] = max(0.1, min(1.0, float(params['ema_alpha'])))
+                if 'enable_smoothing' in params:
+                    web_data['control_params']['enable_smoothing'] = bool(params['enable_smoothing'])
                 
                 # 设置更新标志
                 web_data['params_updated'] = True
@@ -3116,6 +3302,11 @@ def main():
     parser.add_argument("--max_speed", type=float, default=1000.0, help="最大PWM值 -1000~+1000 (默认: 1000)")
     parser.add_argument("--min_speed", type=float, default=100.0, help="最小PWM值，前进时最低速度 (默认: 100)")
     
+    # EMA时间平滑参数
+    parser.add_argument("--ema_alpha", type=float, default=0.5, help="EMA平滑系数 (0.1-1.0, 默认: 0.5)")
+    parser.add_argument("--enable_smoothing", action="store_true", default=True, help="启用控制指令EMA平滑 (默认: 启用)")
+    parser.add_argument("--disable_smoothing", action="store_true", help="禁用控制指令EMA平滑")
+    
     # Web界面和GUI选项
     parser.add_argument("--web", action="store_true", help="启用Web界面")
     parser.add_argument("--web_port", type=int, default=5000, help="Web界面端口 (默认: 5000)")
@@ -3181,6 +3372,10 @@ def main():
             else:
                 print("⚠️ 串口控制功能未启用，如需使用请添加 --enable_serial 参数")
             
+            # 处理EMA平滑参数
+            enable_smoothing = args.enable_smoothing and not args.disable_smoothing
+            ema_alpha = max(0.1, min(1.0, args.ema_alpha))  # 限制在0.1-1.0范围
+            
             realtime_inference(
                 model_path=args.model,
                 device_id=args.device_id,
@@ -3200,7 +3395,9 @@ def main():
                 full_image_bird_eye=not args.no_full_image_bird_eye,  # 反转逻辑
                 edge_computing=args.edge_computing,
                 pixels_per_unit=args.pixels_per_unit,
-                margin_ratio=args.margin_ratio
+                margin_ratio=args.margin_ratio,
+                ema_alpha=ema_alpha,
+                enable_smoothing=enable_smoothing
             )
             return
         
@@ -3220,6 +3417,10 @@ def main():
             sys.exit(1)
         
         # 执行推理
+        # 处理EMA平滑参数
+        enable_smoothing = args.enable_control and args.enable_smoothing and not args.disable_smoothing
+        ema_alpha = max(0.1, min(1.0, args.ema_alpha))  # 限制在0.1-1.0范围
+        
         results = inference_single_image(
             image_path=args.input,
             model_path=args.model,
@@ -3243,7 +3444,9 @@ def main():
             curvature_damping=args.curvature_damping,
             preview_distance=args.preview_distance,
             max_speed=args.max_speed,
-            min_speed=args.min_speed
+            min_speed=args.min_speed,
+            ema_alpha=ema_alpha,
+            enable_smoothing=enable_smoothing
         )
         
         # 处理输出路径重命名
@@ -3344,3 +3547,4 @@ def save_path_data_json(path_data, json_path):
 
 if __name__ == "__main__":
     main()
+    
