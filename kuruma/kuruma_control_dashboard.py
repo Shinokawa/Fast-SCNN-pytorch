@@ -1979,6 +1979,20 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             )
             transform_time = (time.time() - transform_start) * 1000
             
+            # 检查Web界面参数更新
+            if enable_web and enable_control and controller:
+                with web_data_lock:
+                    if web_data.get('params_updated', False):
+                        # 应用新参数到控制器
+                        new_params = web_data['control_params']
+                        controller.steering_gain = new_params['steering_gain']
+                        controller.base_pwm = new_params['base_speed']
+                        controller.preview_distance = new_params['preview_distance']
+                        
+                        web_data['params_updated'] = False  # 重置标志
+                        print(f"🎛️ 控制参数已更新: 转向增益={controller.steering_gain}, "
+                              f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm")
+            
             # 5. 控制计算
             control_time = 0
             control_result = None
@@ -2111,7 +2125,13 @@ web_data = {
     'latest_stats': {},
     'is_running': False,
     'frame_count': 0,
-    'start_time': None
+    'start_time': None,
+    'control_params': {
+        'steering_gain': 10.0,
+        'base_speed': 500.0,
+        'preview_distance': 30.0
+    },
+    'params_updated': False
 }
 web_data_lock = Lock()
 
@@ -2195,6 +2215,58 @@ WEB_TEMPLATE = """
             font-family: monospace;
             font-size: 12px;
         }
+        .param-panel {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .param-control {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 15px;
+        }
+        .param-label {
+            min-width: 120px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .param-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #444;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        .param-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+        .param-value {
+            min-width: 80px;
+            text-align: center;
+            font-weight: bold;
+            color: #fff;
+        }
+        .param-apply {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .param-apply:hover {
+            background: #45a049;
+        }
     </style>
 </head>
 <body>
@@ -2231,6 +2303,31 @@ WEB_TEMPLATE = """
             <div class="stat-card">
                 <div class="stat-value" id="right-pwm">0</div>
                 <div class="stat-label">右轮PWM</div>
+            </div>
+        </div>
+        
+        <div class="param-panel">
+            <h3>🎛️ 控制参数实时调整</h3>
+            <div class="param-control">
+                <span class="param-label">转向增益</span>
+                <input type="range" class="param-slider" id="steering-gain-slider" 
+                       min="1" max="50" step="0.5" value="10">
+                <span class="param-value" id="steering-gain-value">10.0</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">基础PWM</span>
+                <input type="range" class="param-slider" id="base-speed-slider" 
+                       min="100" max="1000" step="10" value="500">
+                <span class="param-value" id="base-speed-value">500</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">预瞄距离(cm)</span>
+                <input type="range" class="param-slider" id="preview-distance-slider" 
+                       min="10" max="100" step="1" value="30">
+                <span class="param-value" id="preview-distance-value">30</span>
+            </div>
+            <div style="text-align: center; margin-top: 15px;">
+                <button class="param-apply" onclick="applyParameters()">应用参数</button>
             </div>
         </div>
         
@@ -2299,12 +2396,66 @@ WEB_TEMPLATE = """
             img.src = '/api/control_map?' + new Date().getTime();
         }
         
+        // 参数滑块更新显示值
+        function updateSliderValues() {
+            const steeringGain = document.getElementById('steering-gain-slider');
+            const steeringValue = document.getElementById('steering-gain-value');
+            steeringValue.textContent = parseFloat(steeringGain.value).toFixed(1);
+            
+            const baseSpeed = document.getElementById('base-speed-slider');
+            const baseValue = document.getElementById('base-speed-value');
+            baseValue.textContent = baseSpeed.value;
+            
+            const previewDistance = document.getElementById('preview-distance-slider');
+            const previewValue = document.getElementById('preview-distance-value');
+            previewValue.textContent = previewDistance.value;
+        }
+        
+        // 应用参数到系统
+        function applyParameters() {
+            const steeringGain = document.getElementById('steering-gain-slider').value;
+            const baseSpeed = document.getElementById('base-speed-slider').value;
+            const previewDistance = document.getElementById('preview-distance-slider').value;
+            
+            const params = {
+                steering_gain: parseFloat(steeringGain),
+                base_speed: parseFloat(baseSpeed),
+                preview_distance: parseFloat(previewDistance)
+            };
+            
+            fetch('/api/update_params', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(params)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry(`参数更新成功: 转向增益=${steeringGain}, 基础PWM=${baseSpeed}, 预瞄距离=${previewDistance}cm`);
+                } else {
+                    addLogEntry(`参数更新失败: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                addLogEntry(`参数更新错误: ${error}`);
+                console.error('参数更新失败:', error);
+            });
+        }
+        
+        // 绑定滑块事件
+        document.getElementById('steering-gain-slider').addEventListener('input', updateSliderValues);
+        document.getElementById('base-speed-slider').addEventListener('input', updateSliderValues);
+        document.getElementById('preview-distance-slider').addEventListener('input', updateSliderValues);
+        
         // 启动定时更新
         setInterval(updateStats, 1000);  // 每秒更新状态
         setInterval(updateControlMap, 2000);  // 每2秒更新控制地图
         
         // 初始加载
         updateStats();
+        updateSliderValues();
     </script>
 </body>
 </html>
@@ -2336,6 +2487,37 @@ def create_web_app():
                 stats['fps'] = 0
         
         return jsonify(stats)
+    
+    @app.route('/api/update_params', methods=['POST'])
+    def update_params():
+        try:
+            params = request.get_json()
+            
+            # 验证参数
+            if not params:
+                return jsonify({'success': False, 'error': '无效的参数数据'})
+            
+            # 更新全局控制参数
+            with web_data_lock:
+                if 'control_params' not in web_data:
+                    web_data['control_params'] = {}
+                
+                if 'steering_gain' in params:
+                    web_data['control_params']['steering_gain'] = float(params['steering_gain'])
+                if 'base_speed' in params:
+                    web_data['control_params']['base_speed'] = float(params['base_speed'])
+                if 'preview_distance' in params:
+                    web_data['control_params']['preview_distance'] = float(params['preview_distance'])
+                
+                # 设置更新标志
+                web_data['params_updated'] = True
+            
+            print(f"🎛️ Web参数更新: {params}")
+            return jsonify({'success': True, 'message': '参数更新成功'})
+            
+        except Exception as e:
+            print(f"❌ 参数更新错误: {e}")
+            return jsonify({'success': False, 'error': str(e)})
     
     @app.route('/api/control_map')
     def get_control_map():
