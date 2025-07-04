@@ -73,6 +73,15 @@ except ImportError:
     print("安装命令: pip install ais_bench")
     sys.exit(1)
 
+# 导入小车控制模块
+try:
+    from car_controller_simple import SimpleCarController
+    CAR_CONTROLLER_AVAILABLE = True
+    print("✅ 小车控制模块加载成功")
+except ImportError:
+    print("⚠️ 警告：未找到car_controller_simple模块，串口控制功能不可用")
+    CAR_CONTROLLER_AVAILABLE = False
+
 # ---------------------------------------------------------------------------------
 # --- 🔧 内置标定参数 (基于用户提供的标定点) ---
 # ---------------------------------------------------------------------------------
@@ -360,7 +369,7 @@ def inference_single_image(image_path, model_path, device_id=0,
                           num_waypoints=20, min_road_width=10, edge_computing=False,
                           force_bottom_center=True, enable_control=False, 
                           steering_gain=1.0, base_speed=10.0, curvature_damping=0.1, 
-                          preview_distance=30.0, max_speed=20.0, min_speed=5.0):
+                          preview_distance=30.0, max_speed=1000.0, min_speed=5.0):
     """
     集成车道线分割推理和透视变换的完整感知管道 - Atlas版本
     
@@ -559,11 +568,11 @@ def inference_single_image(image_path, model_path, device_id=0,
         # 初始化控制器
         controller = VisualLateralErrorController(
             steering_gain=steering_gain,
-            base_pwm=base_speed,  # 重命名参数映射
+            base_pwm=int(base_speed),  # 重命名参数映射，转换为int
             curvature_damping=curvature_damping,
             preview_distance=preview_distance,
-            max_pwm=max_speed,    # 重命名参数映射
-            min_pwm=min_speed     # 重命名参数映射
+            max_pwm=int(max_speed),    # 重命名参数映射，转换为int
+            min_pwm=int(min_speed)     # 重命名参数映射，转换为int
         )
         
         # 计算控制指令
@@ -1335,7 +1344,7 @@ class VisualLateralErrorController:
     """
     
     def __init__(self, steering_gain=50.0, base_pwm=300, curvature_damping=0.1, 
-                 preview_distance=30.0, max_pwm=800, min_pwm=100):
+                 preview_distance=30.0, max_pwm=1000, min_pwm=100):
         """
         初始化控制器参数
         
@@ -1841,8 +1850,9 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       log_file=None, enable_control=True,
                       steering_gain=1.0, base_speed=10.0, 
                       curvature_damping=0.1, preview_distance=30.0,
-                      max_speed=20.0, min_speed=5.0,
-                      enable_web=False, no_gui=False, full_image_bird_eye=True):
+                      max_speed=1000.0, min_speed=5.0,
+                      enable_web=False, no_gui=False, full_image_bird_eye=True,
+                      edge_computing=False, pixels_per_unit=20, margin_ratio=0.1):
     """
     实时摄像头推理模式
     
@@ -1858,6 +1868,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         no_gui: 是否禁用GUI显示
         其他: 控制参数
     """
+    global car_controller
+    
     # 配置日志
     setup_logging(log_file)
     logger = logging.getLogger(__name__)
@@ -1896,11 +1908,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         # 使用当前文件中的控制器类
         controller = VisualLateralErrorController(
             steering_gain=steering_gain,
-            base_pwm=base_speed,
+            base_pwm=int(base_speed),
             curvature_damping=curvature_damping,
             preview_distance=preview_distance,
-            max_pwm=max_speed,
-            min_pwm=min_speed
+            max_pwm=int(max_speed),
+            min_pwm=int(min_speed)
         )
         logger.info("🚗 控制器初始化完成")
     else:
@@ -1952,19 +1964,29 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             # 4. 透视变换和路径规划
             transform_start = time.time()
             
-            # 使用与单文件推理相同的逻辑，应用边缘计算优化
-            if full_image_bird_eye:
-                # 完整图像模式：应用与单文件推理相同的边缘计算优化
-                adjusted_pixels_per_unit = 1  # 与单文件推理相同：边缘计算极致优化
-                print(f"⚡ 边缘计算极致优化：像素密度 = {adjusted_pixels_per_unit} 像素/单位")
+            # 使用与单文件推理完全相同的逻辑，应用边缘计算优化
+            if edge_computing:
+                if full_image_bird_eye:
+                    # 边缘计算+完整图像：超低像素密度
+                    adjusted_pixels_per_unit = 1  # 固定1像素/单位，减少400倍计算量
+                    print(f"⚡ 边缘计算极致优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
+                else:
+                    # 边缘计算+A4区域：低像素密度
+                    adjusted_pixels_per_unit = 2  # 固定2像素/单位
+                    print(f"⚡ 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
             else:
-                # A4纸区域模式：使用较高像素密度
-                adjusted_pixels_per_unit = 20
-                print(f"🔧 A4纸区域鸟瞰图模式：像素密度 = {adjusted_pixels_per_unit} 像素/单位")
+                if full_image_bird_eye:
+                    # 完整图像模式：极低像素密度（边缘计算友好）
+                    adjusted_pixels_per_unit = max(1, pixels_per_unit // 20)  # 最低1像素/单位，减少400倍计算量
+                    print(f"� 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位（减少{pixels_per_unit//adjusted_pixels_per_unit}倍计算量）")
+                else:
+                    # A4纸区域模式：中等优化
+                    adjusted_pixels_per_unit = max(2, pixels_per_unit // 4)  # 最低2像素/单位
+                    print(f"🔧 性能优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
             
-            transformer = PerspectiveTransformer()
+            # 使用已初始化的transformer对象，避免重复创建
             bird_eye_image, bird_eye_mask, view_params = transformer.transform_image_and_mask(
-                frame, lane_mask, pixels_per_unit=adjusted_pixels_per_unit, margin_ratio=0.1, full_image=full_image_bird_eye)
+                frame, lane_mask, pixels_per_unit=adjusted_pixels_per_unit, margin_ratio=margin_ratio, full_image=full_image_bird_eye)
             
             # 路径规划 - 使用与单文件推理相同的参数
             control_map, path_data = create_control_map(
@@ -1988,26 +2010,83 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         controller.steering_gain = new_params['steering_gain']
                         controller.base_pwm = new_params['base_speed']
                         controller.preview_distance = new_params['preview_distance']
+                        controller.curvature_damping = new_params['curvature_damping']
                         
                         web_data['params_updated'] = False  # 重置标志
                         print(f"🎛️ 控制参数已更新: 转向增益={controller.steering_gain}, "
-                              f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm")
+                              f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm, "
+                              f"阻尼系数={controller.curvature_damping}")
             
             # 5. 控制计算
             control_time = 0
             control_result = None
-            if enable_control and path_data is not None:
+            if enable_control and path_data is not None and controller is not None:
                 control_start = time.time()
                 control_result = controller.compute_wheel_pwm(path_data, view_params)
                 control_time = (time.time() - control_start) * 1000
             
+            # 6. 串口控制指令发送
+            if enable_web and control_result:
+                with web_data_lock:
+                    # 检查是否启用串口控制
+                    if (web_data.get('car_driving', False) and 
+                        web_data.get('serial_connected', False) and 
+                        not web_data.get('emergency_stop', False)):
+                        
+                        # 发送控制指令到串口
+                        if car_controller is not None and car_controller.is_connected:
+                            try:
+                                # 将PWM值转换为串口控制器需要的轮速
+                                # PWM范围通常是0-1000，转换为串口控制器的-1000到+1000范围
+                                left_speed = int(control_result['pwm_left'])
+                                right_speed = int(control_result['pwm_right'])
+                                
+                                # 限制速度范围
+                                left_speed = max(-1000, min(1000, left_speed))
+                                right_speed = max(-1000, min(1000, right_speed))
+                                
+                                # 发送控制指令
+                                success = car_controller.set_wheel_speeds(left_speed, right_speed)
+                                
+                                if success:
+                                    # 更新最后发送的控制指令
+                                    web_data['last_control_command'] = {
+                                        'left_speed': left_speed,
+                                        'right_speed': right_speed,
+                                        'timestamp': time.time()
+                                    }
+                                    # 每50帧输出一次串口控制信息
+                                    if frame_count % 50 == 0:
+                                        print(f"📡 串口控制指令发送: 左轮={left_speed}, 右轮={right_speed}")
+                                else:
+                                    print(f"⚠️ 串口控制指令发送失败")
+                                    
+                            except Exception as e:
+                                print(f"❌ 串口控制错误: {e}")
+                                # 串口错误时自动停止行驶
+                                web_data['car_driving'] = False
+                                web_data['emergency_stop'] = True
+                    
+                    elif web_data.get('emergency_stop', False):
+                        # 紧急停车状态下确保发送停止指令
+                        if car_controller is not None and car_controller.is_connected:
+                            try:
+                                car_controller.stop()
+                                web_data['last_control_command'] = {
+                                    'left_speed': 0,
+                                    'right_speed': 0,
+                                    'timestamp': time.time()
+                                }
+                            except Exception as e:
+                                print(f"❌ 紧急停车串口指令错误: {e}")
+            
             # 性能统计
             frame_count += 1
-            total_times["preprocess"] += preprocess_time
-            total_times["inference"] += inference_time
-            total_times["postprocess"] += postprocess_time
-            total_times["transform"] += transform_time
-            total_times["control"] += control_time
+            total_times["preprocess"] += int(preprocess_time)
+            total_times["inference"] += int(inference_time)
+            total_times["postprocess"] += int(postprocess_time)
+            total_times["transform"] += int(transform_time)
+            total_times["control"] += int(control_time)
             
             pipeline_latency = (time.time() - loop_start) * 1000
             
@@ -2073,7 +2152,12 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         'left_pwm': control_result['pwm_left'] if control_result else 0,
                         'right_pwm': control_result['pwm_right'] if control_result else 0,
                         'lateral_error': control_result['lateral_error'] if control_result else 0,
-                        'path_curvature': control_result.get('curvature_level', 0) if control_result else 0
+                        'path_curvature': control_result.get('curvature_level', 0) if control_result else 0,
+                        # 串口控制状态
+                        'serial_connected': web_data.get('serial_connected', False),
+                        'car_driving': web_data.get('car_driving', False),
+                        'control_enabled': web_data.get('control_enabled', False),
+                        'last_command_sent': (web_data.get('last_control_command') or {}).get('timestamp', 0)
                     }
             
             # 检测退出条件（仅在有GUI时检查按键）
@@ -2101,6 +2185,17 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         if enable_web:
             with web_data_lock:
                 web_data['is_running'] = False
+                web_data['car_driving'] = False
+                web_data['emergency_stop'] = True
+        
+        # 安全关闭车辆控制器
+        if car_controller is not None:
+            try:
+                car_controller.stop()  # 发送停止指令
+                car_controller.disconnect()  # 断开串口连接
+                logger.info("🔌 车辆控制器已安全关闭")
+            except Exception as e:
+                logger.error(f"⚠️ 关闭车辆控制器时出错: {e}")
                 
         cap.release()
         
@@ -2129,11 +2224,25 @@ web_data = {
     'control_params': {
         'steering_gain': 10.0,
         'base_speed': 500.0,
-        'preview_distance': 30.0
+        'preview_distance': 30.0,
+        'curvature_damping': 0.1
     },
-    'params_updated': False
+    'params_updated': False,
+    # 串口控制相关状态
+    'serial_enabled': False,      # 串口功能是否启用
+    'serial_connected': False,    # 串口是否连接
+    'car_driving': False,         # 小车是否正在行驶
+    'emergency_stop': False,      # 紧急停车状态
+    'last_control_command': None, # 最后发送的控制指令
+    'serial_port': '/dev/ttyAMA0', # 串口设备
+    'control_enabled': False      # 控制算法是否激活
 }
 web_data_lock = Lock()
+
+# 全局车辆控制器
+car_controller = None
+control_thread = None
+control_enabled = False
 
 # HTML模板
 WEB_TEMPLATE = """
@@ -2267,6 +2376,93 @@ WEB_TEMPLATE = """
         .param-apply:hover {
             background: #45a049;
         }
+        
+        /* 车辆控制面板样式 */
+        .control-panel {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 2px solid #FF9800;
+        }
+        .control-status {
+            margin-bottom: 20px;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .status-label {
+            font-weight: bold;
+            color: #FF9800;
+        }
+        .status-value {
+            font-weight: bold;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .status-connected {
+            background: #4CAF50;
+            color: white;
+        }
+        .status-disconnected {
+            background: #f44336;
+            color: white;
+        }
+        .status-driving {
+            background: #2196F3;
+            color: white;
+        }
+        .status-stopped {
+            background: #757575;
+            color: white;
+        }
+        .control-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .control-btn {
+            flex: 1;
+            min-width: 120px;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .start-btn {
+            background: #4CAF50;
+            color: white;
+        }
+        .start-btn:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+        .stop-btn {
+            background: #f44336;
+            color: white;
+        }
+        .stop-btn:hover {
+            background: #da190b;
+            transform: translateY(-2px);
+        }
+        .connect-btn {
+            background: #2196F3;
+            color: white;
+        }
+        .connect-btn:hover {
+            background: #1976D2;
+            transform: translateY(-2px);
+        }
+        .control-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
     </style>
 </head>
 <body>
@@ -2326,8 +2522,39 @@ WEB_TEMPLATE = """
                        min="10" max="100" step="1" value="30">
                 <span class="param-value" id="preview-distance-value">30</span>
             </div>
+            <div class="param-control">
+                <span class="param-label">阻尼系数</span>
+                <input type="range" class="param-slider" id="curvature-damping-slider" 
+                       min="0.01" max="1.0" step="0.01" value="0.1">
+                <span class="param-value" id="curvature-damping-value">0.1</span>
+            </div>
             <div style="text-align: center; margin-top: 15px;">
                 <button class="param-apply" onclick="applyParameters()">应用参数</button>
+            </div>
+        </div>
+        
+        <div class="control-panel">
+            <h3>🚗 车辆控制</h3>
+            <div class="control-status">
+                <div class="status-item">
+                    <span class="status-label">串口状态:</span>
+                    <span id="serial-status" class="status-value status-disconnected">未连接</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">行驶状态:</span>
+                    <span id="driving-status" class="status-value status-stopped">停止</span>
+                </div>
+            </div>
+            <div class="control-buttons">
+                <button id="start-driving-btn" class="control-btn start-btn" onclick="startDriving()">
+                    🚀 开始行驶
+                </button>
+                <button id="emergency-stop-btn" class="control-btn stop-btn" onclick="emergencyStop()">
+                    🛑 紧急停车
+                </button>
+                <button id="connect-serial-btn" class="control-btn connect-btn" onclick="connectSerial()">
+                    🔌 连接串口
+                </button>
             </div>
         </div>
         
@@ -2409,6 +2636,10 @@ WEB_TEMPLATE = """
             const previewDistance = document.getElementById('preview-distance-slider');
             const previewValue = document.getElementById('preview-distance-value');
             previewValue.textContent = previewDistance.value;
+            
+            const curvatureDamping = document.getElementById('curvature-damping-slider');
+            const dampingValue = document.getElementById('curvature-damping-value');
+            dampingValue.textContent = parseFloat(curvatureDamping.value).toFixed(2);
         }
         
         // 应用参数到系统
@@ -2416,11 +2647,13 @@ WEB_TEMPLATE = """
             const steeringGain = document.getElementById('steering-gain-slider').value;
             const baseSpeed = document.getElementById('base-speed-slider').value;
             const previewDistance = document.getElementById('preview-distance-slider').value;
+            const curvatureDamping = document.getElementById('curvature-damping-slider').value;
             
             const params = {
                 steering_gain: parseFloat(steeringGain),
                 base_speed: parseFloat(baseSpeed),
-                preview_distance: parseFloat(previewDistance)
+                preview_distance: parseFloat(previewDistance),
+                curvature_damping: parseFloat(curvatureDamping)
             };
             
             fetch('/api/update_params', {
@@ -2433,7 +2666,7 @@ WEB_TEMPLATE = """
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    addLogEntry(`参数更新成功: 转向增益=${steeringGain}, 基础PWM=${baseSpeed}, 预瞄距离=${previewDistance}cm`);
+                    addLogEntry(`参数更新成功: 转向增益=${steeringGain}, 基础PWM=${baseSpeed}, 预瞄距离=${previewDistance}cm, 阻尼系数=${curvatureDamping}`);
                 } else {
                     addLogEntry(`参数更新失败: ${data.error}`);
                 }
@@ -2444,18 +2677,144 @@ WEB_TEMPLATE = """
             });
         }
         
+        // 车辆控制函数
+        function connectSerial() {
+            fetch('/api/connect_serial', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry('串口连接成功');
+                    updateControlStatus();
+                } else {
+                    addLogEntry(`串口连接失败: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                addLogEntry(`串口连接错误: ${error}`);
+                console.error('串口连接失败:', error);
+            });
+        }
+        
+        function startDriving() {
+            fetch('/api/start_driving', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry('🚀 开始行驶模式');
+                    updateControlStatus();
+                } else {
+                    addLogEntry(`启动行驶失败: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                addLogEntry(`启动行驶错误: ${error}`);
+                console.error('启动行驶失败:', error);
+            });
+        }
+        
+        function emergencyStop() {
+            fetch('/api/emergency_stop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry('🛑 紧急停车执行成功');
+                    updateControlStatus();
+                } else {
+                    addLogEntry(`紧急停车失败: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                addLogEntry(`紧急停车错误: ${error}`);
+                console.error('紧急停车失败:', error);
+            });
+        }
+        
+        function updateControlStatus() {
+            fetch('/api/control_status')
+            .then(response => response.json())
+            .then(data => {
+                // 更新串口状态
+                const serialStatus = document.getElementById('serial-status');
+                if (data.serial_connected) {
+                    serialStatus.textContent = '已连接';
+                    serialStatus.className = 'status-value status-connected';
+                } else {
+                    serialStatus.textContent = '未连接';
+                    serialStatus.className = 'status-value status-disconnected';
+                }
+                
+                // 更新行驶状态
+                const drivingStatus = document.getElementById('driving-status');
+                if (data.car_driving) {
+                    drivingStatus.textContent = '行驶中';
+                    drivingStatus.className = 'status-value status-driving';
+                } else {
+                    drivingStatus.textContent = '停止';
+                    drivingStatus.className = 'status-value status-stopped';
+                }
+                
+                // 更新按钮状态
+                const startBtn = document.getElementById('start-driving-btn');
+                const stopBtn = document.getElementById('emergency-stop-btn');
+                const connectBtn = document.getElementById('connect-serial-btn');
+                
+                if (data.serial_connected) {
+                    connectBtn.textContent = '🔌 串口已连接';
+                    connectBtn.disabled = true;
+                    startBtn.disabled = false;
+                    stopBtn.disabled = false;
+                } else {
+                    connectBtn.textContent = '🔌 连接串口';
+                    connectBtn.disabled = false;
+                    startBtn.disabled = true;
+                    stopBtn.disabled = true;
+                }
+                
+                if (data.car_driving) {
+                    startBtn.disabled = true;
+                    startBtn.textContent = '🚗 行驶中';
+                } else {
+                    if (data.serial_connected) {
+                        startBtn.disabled = false;
+                    }
+                    startBtn.textContent = '🚀 开始行驶';
+                }
+            })
+            .catch(error => {
+                console.error('获取控制状态失败:', error);
+            });
+        }
+        
         // 绑定滑块事件
         document.getElementById('steering-gain-slider').addEventListener('input', updateSliderValues);
         document.getElementById('base-speed-slider').addEventListener('input', updateSliderValues);
         document.getElementById('preview-distance-slider').addEventListener('input', updateSliderValues);
+        document.getElementById('curvature-damping-slider').addEventListener('input', updateSliderValues);
         
         // 启动定时更新
         setInterval(updateStats, 1000);  // 每秒更新状态
         setInterval(updateControlMap, 2000);  // 每2秒更新控制地图
+        setInterval(updateControlStatus, 1000);  // 每秒更新控制状态
         
         // 初始加载
         updateStats();
         updateSliderValues();
+        updateControlStatus();
     </script>
 </body>
 </html>
@@ -2508,6 +2867,8 @@ def create_web_app():
                     web_data['control_params']['base_speed'] = float(params['base_speed'])
                 if 'preview_distance' in params:
                     web_data['control_params']['preview_distance'] = float(params['preview_distance'])
+                if 'curvature_damping' in params:
+                    web_data['control_params']['curvature_damping'] = float(params['curvature_damping'])
                 
                 # 设置更新标志
                 web_data['params_updated'] = True
@@ -2588,6 +2949,97 @@ def create_web_app():
                     mimetype='image/png'
                 )
     
+    # 串口控制相关API
+    @app.route('/api/connect_serial', methods=['POST'])
+    def connect_serial():
+        global car_controller
+        try:
+            if not CAR_CONTROLLER_AVAILABLE:
+                return jsonify({'success': False, 'error': '小车控制模块不可用'})
+            
+            # 初始化车辆控制器
+            if car_controller is None:
+                with web_data_lock:
+                    port = web_data.get('serial_port', '/dev/ttyAMA0')
+                car_controller = SimpleCarController(port=port)
+            
+            # 连接串口
+            if car_controller.connect():
+                with web_data_lock:
+                    web_data['serial_connected'] = True
+                    web_data['serial_enabled'] = True
+                
+                print("✅ 串口连接成功")
+                return jsonify({'success': True, 'message': '串口连接成功'})
+            else:
+                print("❌ 串口连接失败")
+                return jsonify({'success': False, 'error': '串口连接失败'})
+                
+        except Exception as e:
+            print(f"❌ 串口连接错误: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+    
+    @app.route('/api/start_driving', methods=['POST'])
+    def start_driving():
+        global car_controller
+        try:
+            if car_controller is None or not car_controller.is_connected:
+                return jsonify({'success': False, 'error': '串口未连接'})
+            
+            with web_data_lock:
+                web_data['car_driving'] = True
+                web_data['emergency_stop'] = False
+                web_data['control_enabled'] = True
+            
+            print("🚀 开始行驶模式")
+            return jsonify({'success': True, 'message': '开始行驶模式已启动'})
+            
+        except Exception as e:
+            print(f"❌ 启动行驶错误: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+    
+    @app.route('/api/emergency_stop', methods=['POST'])
+    def emergency_stop():
+        global car_controller
+        try:
+            if car_controller is not None and car_controller.is_connected:
+                # 立即发送停止指令
+                car_controller.stop()
+                print("🛑 紧急停车指令已发送")
+            
+            with web_data_lock:
+                web_data['car_driving'] = False
+                web_data['emergency_stop'] = True
+                web_data['control_enabled'] = False
+                web_data['last_control_command'] = {'left_speed': 0, 'right_speed': 0}
+            
+            print("🛑 紧急停车模式激活")
+            return jsonify({'success': True, 'message': '紧急停车已执行'})
+            
+        except Exception as e:
+            print(f"❌ 紧急停车错误: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+    
+    @app.route('/api/control_status')
+    def get_control_status():
+        global car_controller
+        
+        with web_data_lock:
+            status = {
+                'serial_connected': web_data.get('serial_connected', False),
+                'car_driving': web_data.get('car_driving', False),
+                'emergency_stop': web_data.get('emergency_stop', False),
+                'control_enabled': web_data.get('control_enabled', False),
+                'last_control_command': web_data.get('last_control_command', None)
+            }
+        
+        # 检查实际串口状态
+        if car_controller is not None:
+            status['actual_serial_connected'] = car_controller.is_connected
+            status['current_speeds'] = car_controller.get_current_speeds()
+        
+        return jsonify(status)
+    
     return app
 
 def start_web_server(port=5000):
@@ -2616,6 +3068,8 @@ def start_web_server(port=5000):
 # ---------------------------------------------------------------------------------
 
 def main():
+    global car_controller
+    
     parser = argparse.ArgumentParser(description="集成感知与环境建模的车道线分割推理工具 - Atlas版本")
     
     # 主要模式选择
@@ -2659,13 +3113,19 @@ def main():
     parser.add_argument("--base_speed", type=float, default=500.0, help="基础PWM值 -1000~+1000 (默认: 500)")
     parser.add_argument("--curvature_damping", type=float, default=0.1, help="曲率阻尼系数 (默认: 0.1)")
     parser.add_argument("--preview_distance", type=float, default=30.0, help="预瞄距离 cm (默认: 30.0)")
-    parser.add_argument("--max_speed", type=float, default=800.0, help="最大PWM值 -1000~+1000 (默认: 800)")
+    parser.add_argument("--max_speed", type=float, default=1000.0, help="最大PWM值 -1000~+1000 (默认: 1000)")
     parser.add_argument("--min_speed", type=float, default=100.0, help="最小PWM值，前进时最低速度 (默认: 100)")
     
     # Web界面和GUI选项
     parser.add_argument("--web", action="store_true", help="启用Web界面")
     parser.add_argument("--web_port", type=int, default=5000, help="Web界面端口 (默认: 5000)")
     parser.add_argument("--no_gui", action="store_true", help="无GUI模式（不显示OpenCV窗口，仅输出结果）")
+    
+    # 串口控制选项
+    parser.add_argument("--enable_serial", action="store_true", help="启用串口控制功能")
+    parser.add_argument("--serial_port", default="/dev/ttyAMA0", help="串口设备路径 (默认: /dev/ttyAMA0)")
+    parser.add_argument("--auto_connect_serial", action="store_true", help="启动时自动连接串口")
+    parser.add_argument("--auto_start_driving", action="store_true", help="连接串口后自动开始行驶（谨慎使用）")
     
     args = parser.parse_args()
     
@@ -2685,10 +3145,41 @@ def main():
             web_server = None
             if args.web:
                 print("🌐 启动Web界面...")
+                # 初始化Web数据中的串口配置
+                with web_data_lock:
+                    web_data['serial_port'] = args.serial_port
+                    web_data['serial_enabled'] = args.enable_serial
+                
                 web_server = start_web_server(args.web_port)
                 time.sleep(2)  # 等待服务器启动
                 if args.no_gui:
                     print("💡 提示：无GUI模式下，请通过Web界面查看实时状态")
+            
+            # 串口控制初始化
+            if args.enable_serial and CAR_CONTROLLER_AVAILABLE:
+                print("🚗 串口控制功能已启用")
+                if args.auto_connect_serial:
+                    print(f"🔌 自动连接串口: {args.serial_port}")
+                    try:
+                        car_controller = SimpleCarController(port=args.serial_port)
+                        if car_controller.connect():
+                            print("✅ 串口连接成功")
+                            with web_data_lock:
+                                web_data['serial_connected'] = True
+                                if args.auto_start_driving:
+                                    web_data['car_driving'] = True
+                                    web_data['control_enabled'] = True
+                                    print("🚀 自动启动行驶模式")
+                        else:
+                            print("❌ 串口连接失败")
+                    except Exception as e:
+                        print(f"❌ 串口初始化错误: {e}")
+                else:
+                    print("💡 提示：请通过Web界面连接串口或添加 --auto_connect_serial 参数")
+            elif args.enable_serial and not CAR_CONTROLLER_AVAILABLE:
+                print("⚠️ 警告：串口控制功能已启用，但car_controller_simple模块不可用")
+            else:
+                print("⚠️ 串口控制功能未启用，如需使用请添加 --enable_serial 参数")
             
             realtime_inference(
                 model_path=args.model,
@@ -2706,7 +3197,10 @@ def main():
                 min_speed=args.min_speed,
                 enable_web=args.web,
                 no_gui=args.no_gui,
-                full_image_bird_eye=not args.no_full_image_bird_eye  # 反转逻辑
+                full_image_bird_eye=not args.no_full_image_bird_eye,  # 反转逻辑
+                edge_computing=args.edge_computing,
+                pixels_per_unit=args.pixels_per_unit,
+                margin_ratio=args.margin_ratio
             )
             return
         
@@ -2736,7 +3230,7 @@ def main():
             save_control_map=args.save_control_map,
             pixels_per_unit=args.pixels_per_unit,
             margin_ratio=args.margin_ratio,
-            full_image_bird_eye=args.full_image_bird_eye,
+            full_image_bird_eye=not args.no_full_image_bird_eye,
             path_smooth_method=args.path_smooth_method,
             path_degree=args.path_degree,
             num_waypoints=args.num_waypoints,
