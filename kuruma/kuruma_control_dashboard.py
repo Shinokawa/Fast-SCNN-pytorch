@@ -1371,11 +1371,8 @@ class VisualLateralErrorController:
         self.ema_alpha = ema_alpha
         self.enable_smoothing = enable_smoothing
         
-        # EMA时间平滑状态
-        self.ema_pwm_left = None
-        self.ema_pwm_right = None
-        self.ema_lateral_error = None
-        self.ema_steering_adjustment = None
+        # EMA时间平滑状态 - 优化版本：只对输入信号进行平滑
+        self.ema_lateral_error = None  # 对横向误差进行平滑（噪声源头）
         
         # 性能统计
         self.control_history = []
@@ -1386,7 +1383,7 @@ class VisualLateralErrorController:
         print(f"   🌊 曲率阻尼: {curvature_damping}")
         print(f"   👁️ 预瞄距离: {preview_distance} cm")
         print(f"   ⚡ PWM范围: {min_pwm} ~ {max_pwm} (支持双向旋转)")
-        print(f"   🔄 EMA平滑: {'启用' if enable_smoothing else '禁用'} (α={ema_alpha})")
+        print(f"   🔄 EMA平滑: {'启用' if enable_smoothing else '禁用'} (α={ema_alpha}) - 优化版本：输入信号平滑")
     
     def calculate_lateral_error(self, path_data, view_params):
         """
@@ -1452,7 +1449,7 @@ class VisualLateralErrorController:
     
     def compute_wheel_pwm(self, path_data, view_params):
         """
-        完整的控制计算流程 - 输出PWM控制值
+        完整的控制计算流程 - 输出PWM控制值 (优化版本：对输入信号进行平滑)
         
         参数：
             path_data: 路径规划数据
@@ -1461,13 +1458,28 @@ class VisualLateralErrorController:
         返回：
             control_result: 控制结果字典
         """
-        # 模块一：计算横向误差
-        lateral_error, car_position, control_point = self.calculate_lateral_error(path_data, view_params)
+        # 模块一：计算原始横向误差
+        raw_lateral_error, car_position, control_point = self.calculate_lateral_error(path_data, view_params)
         
-        # 模块二：计算转向调整
+        # EMA平滑优化：对输入信号（横向误差）进行平滑，而非输出PWM
+        # 原因：lateral_error是噪声源头，先平滑它可以让后续所有计算都基于稳定输入
+        if self.enable_smoothing:
+            if self.ema_lateral_error is None:
+                # 首次调用，直接使用原始值初始化
+                self.ema_lateral_error = raw_lateral_error
+                lateral_error = raw_lateral_error
+            else:
+                # 应用EMA平滑：S_t = α * Y_t + (1 - α) * S_{t-1}
+                self.ema_lateral_error = (self.ema_alpha * raw_lateral_error + 
+                                         (1 - self.ema_alpha) * self.ema_lateral_error)
+                lateral_error = self.ema_lateral_error
+        else:
+            lateral_error = raw_lateral_error
+        
+        # 模块二：基于平滑后的lateral_error计算转向调整
         steering_adjustment = self.calculate_steering_adjustment(lateral_error)
         
-        # 模块三：计算动态PWM
+        # 模块三：基于平滑后的lateral_error计算动态PWM
         dynamic_pwm = self.calculate_dynamic_pwm(lateral_error)
         
         # 最终指令合成 - 修正差速转向逻辑
@@ -1480,13 +1492,7 @@ class VisualLateralErrorController:
         pwm_right = np.clip(pwm_right, -1000, 1000)
         pwm_left = np.clip(pwm_left, -1000, 1000)
         
-        # 应用EMA时间平滑（如果启用）
-        if self.enable_smoothing:
-            pwm_left, pwm_right, lateral_error, steering_adjustment = self._apply_ema_smoothing(
-                pwm_left, pwm_right, lateral_error, steering_adjustment
-            )
-        
-        # 构建控制结果（使用平滑后的值）
+        # 构建控制结果（基于平滑后的lateral_error计算得出）
         control_result = {
             'lateral_error': lateral_error,
             'car_position': car_position,
@@ -1503,9 +1509,12 @@ class VisualLateralErrorController:
             'speed_right': pwm_right,      # 映射到PWM
             'speed_left': pwm_left,        # 映射到PWM
             'speed_reduction_factor': self.base_pwm / dynamic_pwm if dynamic_pwm > 0 else 1.0,
-            # EMA平滑状态信息
+            # EMA平滑状态信息（优化版本）
             'smoothing_enabled': self.enable_smoothing,
-            'ema_alpha': self.ema_alpha
+            'ema_alpha': self.ema_alpha,
+            'raw_lateral_error': raw_lateral_error,  # 原始横向误差（用于对比分析）
+            'smoothed_lateral_error': lateral_error,  # 平滑后横向误差
+            'smoothing_effect': abs(raw_lateral_error - lateral_error) if self.enable_smoothing else 0.0  # 平滑效果量化
         }
         
         # 记录控制历史
@@ -1513,51 +1522,13 @@ class VisualLateralErrorController:
         
         return control_result
     
-    def _apply_ema_smoothing(self, pwm_left, pwm_right, lateral_error, steering_adjustment):
-        """
-        应用EMA (Exponential Moving Average) 时间平滑
-        
-        EMA公式: S_t = α * Y_t + (1 - α) * S_{t-1}
-        其中：
-        - S_t: 当前时刻的平滑值
-        - Y_t: 当前时刻的观测值  
-        - α: 平滑系数 (0 < α ≤ 1)
-        - α 越大越灵敏，α 越小越平滑
-        
-        参数：
-            pwm_left: 当前左轮PWM值
-            pwm_right: 当前右轮PWM值
-            lateral_error: 当前横向误差
-            steering_adjustment: 当前转向调整量
-            
-        返回：
-            smoothed_pwm_left, smoothed_pwm_right, smoothed_lateral_error, smoothed_steering_adjustment
-        """
-        # 初始化EMA状态（首次调用）
-        if self.ema_pwm_left is None:
-            self.ema_pwm_left = pwm_left
-            self.ema_pwm_right = pwm_right
-            self.ema_lateral_error = lateral_error
-            self.ema_steering_adjustment = steering_adjustment
-            return pwm_left, pwm_right, lateral_error, steering_adjustment
-        
-        # 应用EMA平滑
-        self.ema_pwm_left = self.ema_alpha * pwm_left + (1 - self.ema_alpha) * self.ema_pwm_left
-        self.ema_pwm_right = self.ema_alpha * pwm_right + (1 - self.ema_alpha) * self.ema_pwm_right
-        self.ema_lateral_error = self.ema_alpha * lateral_error + (1 - self.ema_alpha) * self.ema_lateral_error
-        self.ema_steering_adjustment = self.ema_alpha * steering_adjustment + (1 - self.ema_alpha) * self.ema_steering_adjustment
-        
-        return self.ema_pwm_left, self.ema_pwm_right, self.ema_lateral_error, self.ema_steering_adjustment
-    
     def reset_ema_state(self):
         """
         重置EMA平滑状态（用于重新开始控制或紧急停车后恢复）
+        优化版本：只重置横向误差的EMA状态
         """
-        self.ema_pwm_left = None
-        self.ema_pwm_right = None
         self.ema_lateral_error = None
-        self.ema_steering_adjustment = None
-        print("🔄 EMA平滑状态已重置")
+        print("🔄 EMA平滑状态已重置（优化版本：仅重置lateral_error平滑器）")
     
     def update_smoothing_params(self, ema_alpha=None, enable_smoothing=None):
         """
@@ -1576,7 +1547,7 @@ class VisualLateralErrorController:
             self.enable_smoothing = enable_smoothing
             if not enable_smoothing and old_state:
                 self.reset_ema_state()  # 禁用平滑时重置状态
-            print(f"🔄 EMA平滑{'启用' if enable_smoothing else '禁用'}")
+            print(f"🔄 EMA平滑{'启用' if enable_smoothing else '禁用'}（优化版本：输入信号平滑）")
 
     def _get_car_position_world(self, view_params):
         """
@@ -2121,18 +2092,19 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             control_result = None
             if enable_control and path_data is not None and controller is not None:
                 # 检查是否需要重置EMA状态（例如从紧急停车恢复或刚开始行驶）
+                # 优化版本：只检查lateral_error的EMA状态
                 with web_data_lock:
                     if (web_data.get('car_driving', False) and 
                         not web_data.get('emergency_stop', False) and
-                        hasattr(controller, 'ema_pwm_left') and 
-                        controller.ema_pwm_left is None):
+                        hasattr(controller, 'ema_lateral_error') and 
+                        controller.ema_lateral_error is None):
                         # 如果刚开始行驶且EMA状态未初始化，则需要准备接受新的控制
-                        print("🔄 开始行驾，EMA平滑器准备就绪")
+                        print("🔄 开始行驶，EMA平滑器准备就绪（优化版本：输入信号平滑）")
                     elif web_data.get('emergency_stop', False):
                         # 紧急停车状态，重置EMA状态以避免残留影响
                         if hasattr(controller, 'reset_ema_state'):
                             controller.reset_ema_state()
-                            print("🛑 紧急停车状态，EMA状态已重置")
+                            print("🛑 紧急停车状态，EMA状态已重置（优化版本）")
                 
                 control_start = time.time()
                 control_result = controller.compute_wheel_pwm(path_data, view_params)
