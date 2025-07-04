@@ -1,0 +1,64 @@
+{
+  "algorithm_name": "基于视觉横向误差的比例-速度自适应差速控制算法",
+  "algorithm_description": "Proportional-Speed-Adaptive Differential Drive Control based on Visual Lateral Error",
+  "timestamp": "2025-07-04 11:25:02",
+  "parameters": {
+    "steering_gain": 10.0,
+    "base_pwm": 500.0,
+    "curvature_damping": 0.1,
+    "preview_distance": 30.0,
+    "max_pwm": 800.0,
+    "min_pwm": 100.0
+  },
+  "current_control": {
+    "lateral_error": -14.839212106477012,
+    "car_position": [
+      10.853042602539062,
+      44.964935302734375
+    ],
+    "control_point": [
+      -3.9861695039379494,
+      19.75590326409592
+    ],
+    "steering_adjustment": -148.39212106477012,
+    "dynamic_pwm": 201.29462957869794,
+    "pwm_right": 349.68675064346803,
+    "pwm_left": 52.90250851392781,
+    "turn_direction": "left",
+    "curvature_level": 0.4946404035492337,
+    "pwm_reduction_factor": 2.4839212106477015,
+    "dynamic_speed": 201.29462957869794,
+    "speed_right": 349.68675064346803,
+    "speed_left": 52.90250851392781,
+    "speed_reduction_factor": 2.4839212106477015
+  },
+  "control_history": [
+    {
+      "lateral_error": -14.839212106477012,
+      "car_position": [
+        10.853042602539062,
+        44.964935302734375
+      ],
+      "control_point": [
+        -3.9861695039379494,
+        19.75590326409592
+      ],
+      "steering_adjustment": -148.39212106477012,
+      "dynamic_pwm": 201.29462957869794,
+      "pwm_right": 349.68675064346803,
+      "pwm_left": 52.90250851392781,
+      "turn_direction": "left",
+      "curvature_level": 0.4946404035492337,
+      "pwm_reduction_factor": 2.4839212106477015,
+      "dynamic_speed": 201.29462957869794,
+      "speed_right": 349.68675064346803,
+      "speed_left": 52.90250851392781,
+      "speed_reduction_factor": 2.4839212106477015
+    }
+  ],
+  "units": {
+    "position": "cm",
+    "pwm": "-1000~+1000 (bidirectional)",
+    "error": "cm"
+  }
+}

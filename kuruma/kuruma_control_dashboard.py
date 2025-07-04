@@ -1842,7 +1842,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       steering_gain=1.0, base_speed=10.0, 
                       curvature_damping=0.1, preview_distance=30.0,
                       max_speed=20.0, min_speed=5.0,
-                      enable_web=False, no_gui=False):
+                      enable_web=False, no_gui=False, full_image_bird_eye=True):
     """
     实时摄像头推理模式
     
@@ -1893,23 +1893,18 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
     
     # 初始化控制器
     if enable_control:
-        from pathlib import Path
-        if Path(__file__).parent.parent.joinpath('scripts', 'visual_lateral_error_controller.py').exists():
-            sys.path.append(str(Path(__file__).parent.parent / 'scripts'))
-            from visual_lateral_error_controller import VisualLateralErrorController
-            
-            controller = VisualLateralErrorController(
-                steering_gain=steering_gain,
-                base_pwm=base_speed,
-                curvature_damping=curvature_damping,
-                preview_distance=preview_distance,
-                max_pwm=max_speed,
-                min_pwm=min_speed
-            )
-            logger.info("🚗 控制器初始化完成")
-        else:
-            logger.warning("⚠️ 控制器模块未找到，仅进行感知")
-            enable_control = False
+        # 使用当前文件中的控制器类
+        controller = VisualLateralErrorController(
+            steering_gain=steering_gain,
+            base_pwm=base_speed,
+            curvature_damping=curvature_damping,
+            preview_distance=preview_distance,
+            max_pwm=max_speed,
+            min_pwm=min_speed
+        )
+        logger.info("🚗 控制器初始化完成")
+    else:
+        controller = None
     
     # 透视变换器
     transformer = PerspectiveTransformer()
@@ -1956,13 +1951,31 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             
             # 4. 透视变换和路径规划
             transform_start = time.time()
-            bird_eye_image, bird_eye_mask, view_params = transformer.transform_image_and_mask(
-                frame, lane_mask, pixels_per_unit=10, margin_ratio=0.1, full_image=False)
             
-            # 路径规划
+            # 使用与单文件推理相同的逻辑，应用边缘计算优化
+            if full_image_bird_eye:
+                # 完整图像模式：应用与单文件推理相同的边缘计算优化
+                adjusted_pixels_per_unit = 1  # 与单文件推理相同：边缘计算极致优化
+                print(f"⚡ 边缘计算极致优化：像素密度 = {adjusted_pixels_per_unit} 像素/单位")
+            else:
+                # A4纸区域模式：使用较高像素密度
+                adjusted_pixels_per_unit = 20
+                print(f"🔧 A4纸区域鸟瞰图模式：像素密度 = {adjusted_pixels_per_unit} 像素/单位")
+            
+            transformer = PerspectiveTransformer()
+            bird_eye_image, bird_eye_mask, view_params = transformer.transform_image_and_mask(
+                frame, lane_mask, pixels_per_unit=adjusted_pixels_per_unit, margin_ratio=0.1, full_image=full_image_bird_eye)
+            
+            # 路径规划 - 使用与单文件推理相同的参数
             control_map, path_data = create_control_map(
-                bird_eye_mask, view_params, add_grid=False, add_path=True,
-                edge_computing=True, force_bottom_center=True
+                bird_eye_mask, view_params, 
+                add_grid=True, add_path=True,
+                path_smooth_method='polynomial',
+                path_degree=3,
+                num_waypoints=20,
+                min_road_width=10,
+                edge_computing=True, 
+                force_bottom_center=True
             )
             transform_time = (time.time() - transform_start) * 1000
             
@@ -2008,8 +2021,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 
                 # 控制信息
                 if control_result:
-                    logger.info(f"🚗 控制指令: 左轮={control_result['left_wheel_pwm']:.0f}, 右轮={control_result['right_wheel_pwm']:.0f}")
-                    logger.info(f"   横向误差: {control_result['lateral_error']:.2f}cm, 曲率: {control_result['path_curvature']:.4f}")
+                    logger.info(f"🚗 控制指令: 左轮={control_result['pwm_left']:.0f}, 右轮={control_result['pwm_right']:.0f}")
+                    logger.info(f"   横向误差: {control_result['lateral_error']:.2f}cm, 曲率: {control_result.get('curvature_level', 0):.4f}")
             
             # 检测车道线
             lane_pixels = np.sum(lane_mask > 0)
@@ -2019,7 +2032,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             # 每帧简要日志
             if control_result:
                 logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%, "
-                          f"控制[L:{control_result['left_wheel_pwm']:.0f}, R:{control_result['right_wheel_pwm']:.0f}]")
+                          f"控制[L:{control_result['pwm_left']:.0f}, R:{control_result['pwm_right']:.0f}]")
+                # 每帧详细控制信息
+                logger.info(f"   🚗 横向误差: {control_result['lateral_error']:.2f}cm, "
+                          f"曲率: {control_result.get('curvature_level', 0):.4f}, "
+                          f"转向: {control_result.get('turn_direction', 'unknown')}")
             else:
                 logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%")
             
@@ -2027,14 +2044,22 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             if enable_web:
                 with web_data_lock:
                     web_data['frame_count'] = frame_count
-                    web_data['latest_control_map'] = control_map.copy() if control_map is not None else None
+                    
+                    # 调试信息
+                    if control_map is not None:
+                        print(f"🖼️ 生成控制地图: {control_map.shape}, 数据类型: {control_map.dtype}")
+                        web_data['latest_control_map'] = control_map.copy()
+                    else:
+                        print("⚠️ 控制地图为None")
+                        web_data['latest_control_map'] = None
+                        
                     web_data['latest_stats'] = {
                         'latency': pipeline_latency,
                         'lane_ratio': lane_ratio,
-                        'left_pwm': control_result['left_wheel_pwm'] if control_result else 0,
-                        'right_pwm': control_result['right_wheel_pwm'] if control_result else 0,
+                        'left_pwm': control_result['pwm_left'] if control_result else 0,
+                        'right_pwm': control_result['pwm_right'] if control_result else 0,
                         'lateral_error': control_result['lateral_error'] if control_result else 0,
-                        'path_curvature': control_result['path_curvature'] if control_result else 0
+                        'path_curvature': control_result.get('curvature_level', 0) if control_result else 0
                     }
             
             # 检测退出条件（仅在有GUI时检查按键）
@@ -2316,18 +2341,70 @@ def create_web_app():
     def get_control_map():
         with web_data_lock:
             if web_data['latest_control_map'] is not None:
-                # 将OpenCV图像转换为PNG格式的base64
-                _, buffer = cv2.imencode('.png', web_data['latest_control_map'])
-                img_data = base64.b64encode(buffer).decode('utf-8')
-                return f"data:image/png;base64,{img_data}"
+                try:
+                    # 确保图像格式正确
+                    control_map = web_data['latest_control_map']
+                    
+                    # 调试信息
+                    print(f"🖼️ Web请求控制地图: {control_map.shape}, 类型: {control_map.dtype}")
+                    print(f"🖼️ 数据范围: {control_map.min()} ~ {control_map.max()}")
+                    
+                    # 如果是单通道图像，转换为3通道
+                    if len(control_map.shape) == 2:
+                        control_map = cv2.cvtColor(control_map, cv2.COLOR_GRAY2BGR)
+                        print("🔄 单通道转换为3通道")
+                    elif control_map.shape[2] == 1:
+                        control_map = cv2.cvtColor(control_map, cv2.COLOR_GRAY2BGR)
+                        print("🔄 单通道转换为3通道")
+                    
+                    # 确保数据类型为uint8
+                    if control_map.dtype != np.uint8:
+                        if control_map.max() <= 1.0:
+                            control_map = (control_map * 255).astype(np.uint8)
+                            print("🔄 归一化数据转换为uint8")
+                        else:
+                            control_map = control_map.astype(np.uint8)
+                            print("🔄 数据类型转换为uint8")
+                    
+                    # 将OpenCV图像转换为PNG格式
+                    success, buffer = cv2.imencode('.png', control_map)
+                    if not success:
+                        raise Exception("图像编码失败")
+                        
+                    print(f"✅ 控制地图编码成功，buffer长度: {len(buffer)}")
+                    
+                    # 返回二进制图像数据
+                    from flask import Response
+                    return Response(
+                        buffer.tobytes(),
+                        mimetype='image/png',
+                        headers={'Cache-Control': 'no-cache, no-store, must-revalidate'}
+                    )
+                    
+                except Exception as e:
+                    print(f"❌ 控制地图编码错误: {e}")
+                    # 返回错误提示图片
+                    empty_img = np.zeros((300, 400, 3), dtype=np.uint8)
+                    cv2.putText(empty_img, f"Error: {str(e)[:20]}", (10, 150), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    _, buffer = cv2.imencode('.png', empty_img)
+                    from flask import Response
+                    return Response(
+                        buffer.tobytes(),
+                        mimetype='image/png'
+                    )
             else:
+                print("⚠️ 没有可用的控制地图数据")
                 # 返回空图片占位符
                 empty_img = np.zeros((300, 400, 3), dtype=np.uint8)
                 cv2.putText(empty_img, "No Control Map", (50, 150), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 _, buffer = cv2.imencode('.png', empty_img)
-                img_data = base64.b64encode(buffer).decode('utf-8')
-                return f"data:image/png;base64,{img_data}"
+                from flask import Response
+                return Response(
+                    buffer.tobytes(),
+                    mimetype='image/png'
+                )
     
     return app
 
@@ -2384,7 +2461,7 @@ def main():
     parser.add_argument("--margin_ratio", type=float, default=0.1, help="边距比例 (默认: 0.1)")
     parser.add_argument("--no_vis", action="store_true", help="不保存可视化结果，仅推理")
     parser.add_argument("--bird_eye", action="store_true", help="生成鸟瞰图（使用内置A4纸标定）")
-    parser.add_argument("--full_image_bird_eye", action="store_true", help="生成完整原图的鸟瞰图（默认仅A4纸区域）")
+    parser.add_argument("--no_full_image_bird_eye", action="store_true", help="仅生成A4纸区域鸟瞰图（默认生成完整原图）")
     parser.add_argument("--save_control_map", action="store_true", help="保存控制地图并进行路径规划")
     parser.add_argument("--path_smooth_method", default="polynomial", choices=["polynomial", "spline"], help="路径平滑方法")
     parser.add_argument("--path_degree", type=int, default=3, help="路径拟合阶数")
@@ -2446,7 +2523,8 @@ def main():
                 max_speed=args.max_speed,
                 min_speed=args.min_speed,
                 enable_web=args.web,
-                no_gui=args.no_gui
+                no_gui=args.no_gui,
+                full_image_bird_eye=not args.no_full_image_bird_eye  # 反转逻辑
             )
             return
         

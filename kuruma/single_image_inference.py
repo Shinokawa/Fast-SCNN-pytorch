@@ -252,6 +252,7 @@ def inference_single_image(image_path, output_dir=None, show_result=True, save_r
     print("=" * 80)
 
 def main():
+    global MODEL_PATH, DEVICE_ID
     parser = argparse.ArgumentParser(description="Fast-SCNN 车道线检测 - 单图推理")
     parser.add_argument("--input", "-i", required=True, help="输入图片路径")
     parser.add_argument("--output", "-o", default=None, help="输出目录 (默认为输入图片同目录)")
@@ -263,7 +264,7 @@ def main():
     args = parser.parse_args()
     
     # 更新全局配置
-    global MODEL_PATH, DEVICE_ID
+    
     MODEL_PATH = args.model
     DEVICE_ID = args.device
     
