@@ -6,7 +6,7 @@
 
 import time
 import sys
-from car_controller_simple import SimpleCarController
+from kuruma.car_controller_simple import SimpleCarController
 
 def test_basic_control():
     """测试基本控制功能"""

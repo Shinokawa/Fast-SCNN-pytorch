@@ -5,7 +5,7 @@ from flask import Flask, render_template_string, request, redirect, url_for, fla
 
 # 确保可以导入car_controller_simple.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from car_controller_simple import SimpleCarController
+from kuruma.car_controller_simple import SimpleCarController
 
 app = Flask(__name__)
 app.secret_key = 'car_controller_secret_key'
