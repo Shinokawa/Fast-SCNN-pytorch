@@ -166,6 +166,11 @@ def main():
     
     # 日志参数
     parser.add_argument("--log_file", help="日志文件路径 (实时模式)")
+    parser.add_argument("--log_level", default="INFO", 
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                       help="日志级别 (默认: INFO)")
+    parser.add_argument("--disable_console_log", action="store_true", 
+                       help="禁用控制台日志输出，仅输出到文件")
     
     # 图像处理参数
     parser.add_argument("--pixels_per_unit", type=int, default=20, help="每单位像素数 (默认: 20)")
@@ -234,6 +239,24 @@ def main():
     try:
         # 导入统一日志配置
         from core.logging_config import setup_unified_logging, get_module_logger, log_system_initialization
+        import logging
+        
+        # 解析日志级别
+        log_level_map = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL
+        }
+        log_level = log_level_map.get(args.log_level.upper(), logging.INFO)
+        
+        # 配置统一日志系统
+        setup_unified_logging(
+            log_file=args.log_file if hasattr(args, 'log_file') else None,
+            level=log_level,
+            console_output=not args.disable_console_log
+        )
         
         # 配置日志系统
         logger = get_module_logger(__name__)
@@ -289,8 +312,7 @@ def main():
             else:
                 logger.info("⚠️ 串口控制功能未启用，如需使用请添加 --enable_serial 参数")
             
-            # 配置统一日志系统
-            setup_unified_logging(log_file=args.log_file)
+            # 日志系统已在main开始时配置，无需重复配置
             
             # 处理EMA平滑参数
             enable_smoothing = args.enable_smoothing and not args.disable_smoothing
