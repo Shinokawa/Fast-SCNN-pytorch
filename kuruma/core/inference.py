@@ -69,26 +69,27 @@ class AtlasInferSession:
 # ---------------------------------------------------------------------------------
 
 def print_performance_analysis(times_dict, input_tensor, model_path, device_info):
-    """打印详细的性能分析报告"""
-    total_time = sum(times_dict.values())
+    """记录详细的性能分析报告到日志"""
+    from core.logging_config import log_performance_analysis
     
-    print("\n" + "="*60)
-    print("🧠 Atlas NPU + 透视变换 性能分析")
-    print("="*60)
-    print(f"🧠 模型: {Path(model_path).name}")
-    print(f"⚡ 推理设备: {device_info}")
-    print(f"📏 输入尺寸: {input_tensor.shape[3]}×{input_tensor.shape[2]} (W×H)")
-    print(f"🎯 数据类型: {str(input_tensor.dtype).upper()}")
-    print("-"*60)
+    # 准备额外信息
+    additional_info = {
+        "模型": Path(model_path).name,
+        "推理设备": device_info,
+        "数据类型": str(input_tensor.dtype).upper()
+    }
     
-    for stage, time_ms in times_dict.items():
-        percentage = (time_ms / total_time) * 100
-        print(f"⏱️  {stage:15}: {time_ms:6.1f}ms ({percentage:5.1f}%)")
+    # 安全地获取输入尺寸
+    try:
+        if hasattr(input_tensor, 'shape') and len(input_tensor.shape) >= 4:
+            additional_info["输入尺寸"] = f"{input_tensor.shape[3]}×{input_tensor.shape[2]} (W×H)"
+        else:
+            additional_info["输入尺寸"] = "未知"
+    except (AttributeError, IndexError):
+        additional_info["输入尺寸"] = "未知"
     
-    print("-"*60)
-    print(f"🏁 总耗时: {total_time:.1f}ms")
-    print(f"⚡ 理论FPS: {1000/total_time:.1f}")
-    print("="*60)
+    # 记录到日志
+    log_performance_analysis(times_dict, additional_info)
 
 # ---------------------------------------------------------------------------------
 # --- 📱 主推理函数 (与Atlas流程完全一致) ---
@@ -103,7 +104,8 @@ def inference_single_image(image_path, model_path, device_id=0,
                           force_bottom_center=True, enable_control=False, 
                           steering_gain=1.0, base_speed=10.0, curvature_damping=0.1, 
                           preview_distance=30.0, max_speed=1000.0, min_speed=5.0,
-                          ema_alpha=0.5, enable_smoothing=True):
+                          ema_alpha=0.5, enable_smoothing=True, enable_obstacle_detection=False,
+                          obstacle_config=None, save_obstacle_debug=False):
     """
     集成车道线分割推理和透视变换的完整感知管道 - Atlas版本
     
@@ -124,6 +126,9 @@ def inference_single_image(image_path, model_path, device_id=0,
         min_road_width: 最小可行驶宽度
         edge_computing: 边缘计算模式（极致性能优化）
         force_bottom_center: 强制拟合曲线过底边中点
+        enable_obstacle_detection: 是否启用障碍物检测
+        obstacle_config: 障碍物检测配置字典
+        save_obstacle_debug: 是否保存障碍物检测调试可视化
     
     返回：
         dict: 包含结果路径和性能数据
@@ -158,7 +163,7 @@ def inference_single_image(image_path, model_path, device_id=0,
     # 3. 预处理（使用float16以匹配Atlas模型）
     print("🔄 开始预处理...")
     preprocess_start = time.time()
-    input_data = preprocess_matched_resolution(img_bgr, dtype=np.float16)
+    input_data = preprocess_matched_resolution(img_bgr)
     preprocess_time = (time.time() - preprocess_start) * 1000
     
     print(f"📊 输入张量形状: {input_data.shape}")
@@ -177,6 +182,40 @@ def inference_single_image(image_path, model_path, device_id=0,
     postprocess_start = time.time()
     lane_mask = postprocess_matched_resolution(outputs[0], original_width, original_height)
     postprocess_time = (time.time() - postprocess_start) * 1000
+    
+    # 6. 障碍物检测（可选）
+    obstacle_detection_time = 0
+    obstacle_result = None
+    obstacle_vis = None
+    obstacle_debug_vis = None
+    
+    if enable_obstacle_detection:
+        print("🚧 开始障碍物检测...")
+        obstacle_start = time.time()
+        
+        # 导入障碍物检测模块
+        from vision.obstacle_detection import create_obstacle_detector
+        
+        # 创建障碍物检测器
+        obstacle_detector = create_obstacle_detector(obstacle_config)
+        
+        # 将分割结果传递给障碍物检测器
+        obstacle_result = obstacle_detector.detect_obstacles(img_bgr, segmentation_mask=lane_mask)
+        
+        # 创建可视化
+        obstacle_vis = obstacle_detector.visualize_obstacles(img_bgr, obstacle_result)
+        
+        # 创建调试可视化（可选）
+        if save_obstacle_debug:
+            obstacle_debug_vis = obstacle_detector.create_debug_visualization(img_bgr, obstacle_result)
+        
+        obstacle_detection_time = (time.time() - obstacle_start) * 1000
+        
+        print(f"🚧 检测到 {obstacle_result['num_obstacles']} 个障碍物")
+        for i, obstacle in enumerate(obstacle_result['obstacles']):
+            center_x, center_y = obstacle['center']
+            confidence = obstacle['confidence']
+            print(f"   障碍物{i+1}: 中心({center_x}, {center_y}), 置信度{confidence:.2f}")
     
     # 6. 透视变换（可选）
     transform_time = 0
@@ -259,7 +298,7 @@ def inference_single_image(image_path, model_path, device_id=0,
     
     # 保存普通分割掩码
     if save_mask:
-        mask_path = os.path.join(output_dir, f"{base_name}_onnx_mask.jpg")
+        mask_path = os.path.join(output_dir, f"{base_name}_atlas_mask.jpg")
         cv2.imwrite(mask_path, lane_mask)
         results['mask_path'] = mask_path
         print(f"💾 分割掩码已保存: {mask_path}")
@@ -267,10 +306,32 @@ def inference_single_image(image_path, model_path, device_id=0,
     # 保存普通可视化结果
     if save_visualization:
         vis_img = create_visualization(img_bgr, lane_mask)
-        vis_path = os.path.join(output_dir, f"{base_name}_onnx_result.jpg")
+        vis_path = os.path.join(output_dir, f"{base_name}_atlas_result.jpg")
         cv2.imwrite(vis_path, vis_img)
         results['visualization_path'] = vis_path
         print(f"💾 可视化结果已保存: {vis_path}")
+    
+    # 保存障碍物检测结果
+    if enable_obstacle_detection and obstacle_result is not None:
+        # 保存障碍物可视化
+        if obstacle_vis is not None:
+            obstacle_vis_path = os.path.join(output_dir, f"{base_name}_obstacles.jpg")
+            cv2.imwrite(obstacle_vis_path, obstacle_vis)
+            results['obstacle_vis_path'] = obstacle_vis_path
+            print(f"💾 障碍物可视化已保存: {obstacle_vis_path}")
+        
+        # 保存障碍物调试可视化
+        if obstacle_debug_vis is not None:
+            obstacle_debug_path = os.path.join(output_dir, f"{base_name}_obstacle_debug.jpg")
+            cv2.imwrite(obstacle_debug_path, obstacle_debug_vis)
+            results['obstacle_debug_path'] = obstacle_debug_path
+            print(f"💾 障碍物调试可视化已保存: {obstacle_debug_path}")
+        
+        # 保存障碍物数据
+        obstacle_json_path = os.path.join(output_dir, f"{base_name}_obstacle_data.json")
+        from vision.obstacle_detection import save_obstacle_data
+        save_obstacle_data(obstacle_result['obstacles'], obstacle_json_path)
+        results['obstacle_json_path'] = obstacle_json_path
     
     # 保存鸟瞰图
     if bird_eye and bird_eye_image is not None:
@@ -358,6 +419,7 @@ def inference_single_image(image_path, model_path, device_id=0,
         "CPU预处理": preprocess_time,
         "Atlas推理": inference_time,
         "CPU后处理": postprocess_time,
+        "障碍物检测": obstacle_detection_time,
         "透视变换": transform_time,
         "路径规划": path_planning_time,
         "控制计算": control_time,
@@ -387,7 +449,8 @@ def inference_single_image(image_path, model_path, device_id=0,
         'performance': times_dict,
         'device': f"Atlas NPU {device_id}",
         'view_params': view_params,
-        'control_result': control_result
+        'control_result': control_result,
+        'obstacle_result': obstacle_result
     })
     
     return results 

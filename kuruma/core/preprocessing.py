@@ -15,7 +15,7 @@ import cv2
 # --- 🚀🚀🚀 完美匹配的预处理 (640×360 = 640×360，与Atlas完全一致) 🚀🚀🚀 ---
 # ---------------------------------------------------------------------------------
 
-def preprocess_matched_resolution(img_bgr, target_width=640, target_height=360, dtype=np.float32):
+def preprocess_matched_resolution(img_bgr, target_width=640, target_height=360, dtype=np.float16):
     """
     图片预处理，与atlas_single_image_inference.py和lane_dashboard_e2e.py完全一致
     

@@ -191,6 +191,28 @@ def main():
     parser.add_argument("--max_speed", type=float, default=1000.0, help="最大PWM值 -1000~+1000 (默认: 1000)")
     parser.add_argument("--min_speed", type=float, default=100.0, help="最小PWM值，前进时最低速度 (默认: 100)")
     
+    # 障碍物检测参数
+    parser.add_argument("--enable_obstacle_detection", action="store_true", help="启用障碍物检测")
+    parser.add_argument("--obstacle_white_lower", nargs=3, type=int, default=[200, 200, 200], help="白线颜色下限 BGR (默认: 200 200 200)")
+    parser.add_argument("--obstacle_white_upper", nargs=3, type=int, default=[255, 255, 255], help="白线颜色上限 BGR (默认: 255 255 255)")
+    parser.add_argument("--obstacle_gray_lower", nargs=3, type=int, default=[50, 50, 50], help="灰色地面下限 BGR (默认: 50 50 50)")
+    parser.add_argument("--obstacle_gray_upper", nargs=3, type=int, default=[200, 200, 200], help="灰色地面上限 BGR (默认: 200 200 200)")
+    parser.add_argument("--obstacle_min_area", type=int, default=50, help="最小障碍物面积 (默认: 50)")
+    parser.add_argument("--obstacle_max_area", type=int, default=10000, help="最大障碍物面积 (默认: 10000)")
+    parser.add_argument("--obstacle_min_aspect_ratio", type=float, default=0.2, help="最小宽高比 (默认: 0.2)")
+    parser.add_argument("--obstacle_max_aspect_ratio", type=float, default=5.0, help="最大宽高比 (默认: 5.0)")
+    parser.add_argument("--obstacle_shrink_factor", type=float, default=0.7, help="软间隔收缩因子 (0.5-1.0, 默认: 0.7)")
+    parser.add_argument("--obstacle_roi_top", type=float, default=0.15, help="检测区域顶部比例 (0.0-1.0, 默认: 0.2)")
+    parser.add_argument("--obstacle_roi_bottom", type=float, default=0.85, help="检测区域底部比例 (0.0-1.0, 默认: 0.9)")
+    parser.add_argument("--save_obstacle_debug", action="store_true", help="保存障碍物检测调试可视化")
+    
+    # 状态机和避障参数
+    parser.add_argument("--obstacle_detection_interval", type=int, default=10, help="障碍物检测间隔帧数 (默认: 10)")
+    parser.add_argument("--avoidance_left_speed", type=int, default=400, help="避障时左轮速度 (默认: 400)")
+    parser.add_argument("--avoidance_right_speed", type=int, default=700, help="避障时右轮速度 (默认: 700)")
+    parser.add_argument("--avoidance_duration", type=float, default=2.0, help="避障动作持续时间 秒 (默认: 2.0)")
+    parser.add_argument("--reverse_duration", type=float, default=2.0, help="反向动作持续时间 秒 (默认: 2.0)")
+    
     # EMA时间平滑参数
     parser.add_argument("--ema_alpha", type=float, default=0.5, help="EMA平滑系数 (0.1-1.0, 默认: 0.5)")
     parser.add_argument("--enable_smoothing", action="store_true", default=True, help="启用控制指令EMA平滑 (默认: 启用)")
@@ -210,21 +232,27 @@ def main():
     args = parser.parse_args()
     
     try:
-        print("🧠 集成感知与环境建模的车道线分割推理工具 - Atlas版本")
-        print("=" * 60)
-        print("📝 功能: 车道线分割 + 透视变换 + 控制地图生成")
-        print("📏 内置标定: 基于A4纸的透视变换参数")
-        print("🚀 推理设备: Atlas NPU")
-        print("=" * 60)
+        # 导入统一日志配置
+        from core.logging_config import setup_unified_logging, get_module_logger, log_system_initialization
+        
+        # 配置日志系统
+        logger = get_module_logger(__name__)
+        
+        logger.info("🧠 集成感知与环境建模的车道线分割推理工具 - Atlas版本")
+        logger.info("=" * 60)
+        logger.info("📝 功能: 车道线分割 + 透视变换 + 控制地图生成")
+        logger.info("📏 内置标定: 基于A4纸的透视变换参数")
+        logger.info("🚀 推理设备: Atlas NPU")
+        logger.info("=" * 60)
         
         # 实时模式
         if args.realtime:
-            print("🎬 启动实时摄像头推理模式")
+            logger.info("🎬 启动实时摄像头推理模式")
             
             # 启动Web服务器（如果需要）
             web_server = None
             if args.web:
-                print("🌐 启动Web界面...")
+                logger.info("🌐 启动Web界面...")
                 # 初始化Web数据中的串口配置
                 with web_data_lock:
                     web_data['serial_port'] = args.serial_port
@@ -233,37 +261,60 @@ def main():
                 web_server = start_web_server(args.web_port)
                 time.sleep(2)  # 等待服务器启动
                 if args.no_gui:
-                    print("💡 提示：无GUI模式下，请通过Web界面查看实时状态")
+                    logger.info("💡 提示：无GUI模式下，请通过Web界面查看实时状态")
             
             # 串口控制初始化
             if args.enable_serial and CAR_CONTROLLER_AVAILABLE:
-                print("🚗 串口控制功能已启用")
+                logger.info("🚗 串口控制功能已启用")
                 if args.auto_connect_serial:
-                    print(f"🔌 自动连接串口: {args.serial_port}")
+                    logger.info(f"🔌 自动连接串口: {args.serial_port}")
                     try:
                         car_controller = SimpleCarController(port=args.serial_port)
                         if car_controller.connect():
-                            print("✅ 串口连接成功")
+                            logger.info("✅ 串口连接成功")
                             with web_data_lock:
                                 web_data['serial_connected'] = True
                                 if args.auto_start_driving:
                                     web_data['car_driving'] = True
                                     web_data['control_enabled'] = True
-                                    print("🚀 自动启动行驶模式")
+                                    logger.info("🚀 自动启动行驶模式")
                         else:
-                            print("❌ 串口连接失败")
+                            logger.error("❌ 串口连接失败")
                     except Exception as e:
-                        print(f"❌ 串口初始化错误: {e}")
+                        logger.error(f"❌ 串口初始化错误: {e}")
                 else:
-                    print("💡 提示：请通过Web界面连接串口或添加 --auto_connect_serial 参数")
+                    logger.info("💡 提示：请通过Web界面连接串口或添加 --auto_connect_serial 参数")
             elif args.enable_serial and not CAR_CONTROLLER_AVAILABLE:
-                print("⚠️ 警告：串口控制功能已启用，但car_controller_simple模块不可用")
+                logger.warning("⚠️ 警告：串口控制功能已启用，但car_controller_simple模块不可用")
             else:
-                print("⚠️ 串口控制功能未启用，如需使用请添加 --enable_serial 参数")
+                logger.info("⚠️ 串口控制功能未启用，如需使用请添加 --enable_serial 参数")
+            
+            # 配置统一日志系统
+            setup_unified_logging(log_file=args.log_file)
             
             # 处理EMA平滑参数
             enable_smoothing = args.enable_smoothing and not args.disable_smoothing
             ema_alpha = max(0.1, min(1.0, args.ema_alpha))  # 限制在0.1-1.0范围
+            
+            # 构建障碍物检测配置
+            obstacle_config = None
+            if args.enable_obstacle_detection:
+                obstacle_config = {
+                    'white_lower': tuple(args.obstacle_white_lower),
+                    'white_upper': tuple(args.obstacle_white_upper),
+                    'gray_lower': tuple(args.obstacle_gray_lower),
+                    'gray_upper': tuple(args.obstacle_gray_upper),
+                    'min_area': args.obstacle_min_area,
+                    'max_area': args.obstacle_max_area,
+                    'min_aspect_ratio': args.obstacle_min_aspect_ratio,
+                    'max_aspect_ratio': args.obstacle_max_aspect_ratio,
+                    'shrink_factor': max(0.5, min(1.0, args.obstacle_shrink_factor)),
+                    'roi_top': max(0.0, min(1.0, args.obstacle_roi_top)),
+                    'roi_bottom': max(0.0, min(1.0, args.obstacle_roi_bottom))
+                }
+                
+                # 记录障碍物检测配置
+                log_system_initialization("障碍物检测", obstacle_config)
             
             realtime_inference(
                 model_path=args.model,
@@ -286,13 +337,21 @@ def main():
                 pixels_per_unit=args.pixels_per_unit,
                 margin_ratio=args.margin_ratio,
                 ema_alpha=ema_alpha,
-                enable_smoothing=enable_smoothing
+                enable_smoothing=enable_smoothing,
+                # 新增的状态机和障碍物检测参数
+                enable_obstacle_detection=args.enable_obstacle_detection,
+                obstacle_config=obstacle_config,
+                obstacle_detection_interval=args.obstacle_detection_interval,
+                avoidance_left_speed=args.avoidance_left_speed,
+                avoidance_right_speed=args.avoidance_right_speed,
+                avoidance_duration=args.avoidance_duration,
+                reverse_duration=args.reverse_duration
             )
             return
         
         # 单张图片模式
         if not args.input:
-            print("❌ 错误：请指定 --input 输入图片路径或使用 --realtime 进入实时模式")
+            logger.error("❌ 错误：请指定 --input 输入图片路径或使用 --realtime 进入实时模式")
             parser.print_help()
             sys.exit(1)
         
@@ -302,13 +361,33 @@ def main():
         
         # 验证输入文件存在
         if not os.path.exists(args.input):
-            print(f"❌ 错误：输入图片不存在: {args.input}")
+            logger.error(f"❌ 错误：输入图片不存在: {args.input}")
             sys.exit(1)
         
         # 执行推理
         # 处理EMA平滑参数
         enable_smoothing = args.enable_control and args.enable_smoothing and not args.disable_smoothing
         ema_alpha = max(0.1, min(1.0, args.ema_alpha))  # 限制在0.1-1.0范围
+        
+        # 构建障碍物检测配置
+        obstacle_config = None
+        if args.enable_obstacle_detection:
+            obstacle_config = {
+                'white_lower': tuple(args.obstacle_white_lower),
+                'white_upper': tuple(args.obstacle_white_upper),
+                'gray_lower': tuple(args.obstacle_gray_lower),
+                'gray_upper': tuple(args.obstacle_gray_upper),
+                'min_area': args.obstacle_min_area,
+                'max_area': args.obstacle_max_area,
+                'min_aspect_ratio': args.obstacle_min_aspect_ratio,
+                'max_aspect_ratio': args.obstacle_max_aspect_ratio,
+                'shrink_factor': max(0.5, min(1.0, args.obstacle_shrink_factor)),
+                'roi_top': max(0.0, min(1.0, args.obstacle_roi_top)),
+                'roi_bottom': max(0.0, min(1.0, args.obstacle_roi_bottom))
+            }
+            
+            # 记录障碍物检测配置
+            log_system_initialization("障碍物检测", obstacle_config)
         
         results = inference_single_image(
             image_path=args.input,
@@ -335,7 +414,11 @@ def main():
             max_speed=args.max_speed,
             min_speed=args.min_speed,
             ema_alpha=ema_alpha,
-            enable_smoothing=enable_smoothing
+            enable_smoothing=enable_smoothing,
+            # 新增的障碍物检测参数
+            enable_obstacle_detection=args.enable_obstacle_detection,
+            obstacle_config=obstacle_config,
+            save_obstacle_debug=args.save_obstacle_debug
         )
         
         # 处理输出路径重命名
@@ -349,7 +432,7 @@ def main():
             # 移动可视化结果到指定路径
             shutil.move(results['visualization_path'], args.output)
             results['visualization_path'] = args.output
-            print(f"💾 可视化结果已移动到指定路径: {args.output}")
+            logger.info(f"💾 可视化结果已移动到指定路径: {args.output}")
         
         # 处理掩码路径重命名
         if args.save_mask and 'mask_path' in results:
@@ -362,11 +445,11 @@ def main():
             # 移动分割掩码到指定路径
             shutil.move(results['mask_path'], args.save_mask)
             results['mask_path'] = args.save_mask
-            print(f"💾 分割掩码已移动到指定路径: {args.save_mask}")
+            logger.info(f"💾 分割掩码已移动到指定路径: {args.save_mask}")
         
         # 预览结果（可选）
         if args.preview:
-            print("👁️ 显示预览...")
+            logger.info("👁️ 显示预览...")
             original = cv2.imread(args.input)
             
             if 'visualization_path' in results:
@@ -382,30 +465,30 @@ def main():
                 control_map = cv2.imread(results['control_map_path'])
                 cv2.imshow("Control Map", control_map)
             
-            print("按任意键关闭预览...")
+            logger.info("按任意键关闭预览...")
             cv2.waitKey(0)
             cv2.destroyAllWindows()
         
-        print("\n✅ Atlas推理与环境建模完成！")
-        print("🔧 此结果可用于后续的路径规划和车辆控制")
+        logger.info("\n✅ Atlas推理与环境建模完成！")
+        logger.info("🔧 此结果可用于后续的路径规划和车辆控制")
         
         if 'visualization_path' in results:
-            print(f"🎨 分割可视化: {results['visualization_path']}")
+            logger.info(f"🎨 分割可视化: {results['visualization_path']}")
         if 'mask_path' in results:
-            print(f"🎭 分割掩码: {results['mask_path']}")
+            logger.info(f"🎭 分割掩码: {results['mask_path']}")
         if 'bird_eye_vis_path' in results:
-            print(f"🦅 鸟瞰图分割: {results['bird_eye_vis_path']}")
+            logger.info(f"🦅 鸟瞰图分割: {results['bird_eye_vis_path']}")
         if 'control_map_path' in results:
-            print(f"🗺️ 控制地图: {results['control_map_path']}")
+            logger.info(f"🗺️ 控制地图: {results['control_map_path']}")
         if 'path_json_path' in results:
-            print(f"🛣️ 路径数据: {results['path_json_path']}")
+            logger.info(f"🛣️ 路径数据: {results['path_json_path']}")
         if 'control_json_path' in results:
-            print(f"🚗 控制数据: {results['control_json_path']}")
+            logger.info(f"🚗 控制数据: {results['control_json_path']}")
         if 'control_vis_path' in results:
-            print(f"🎮 控制可视化: {results['control_vis_path']}")
+            logger.info(f"🎮 控制可视化: {results['control_vis_path']}")
             
     except Exception as e:
-        print(f"❌ 推理失败: {e}")
+        logger.error(f"❌ 推理失败: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

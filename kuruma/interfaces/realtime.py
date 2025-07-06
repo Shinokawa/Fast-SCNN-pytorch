@@ -20,6 +20,7 @@ from core.inference import AtlasInferSession
 from vision.transform import PerspectiveTransformer
 from vision.path_planning import create_control_map
 from control.visual_controller import VisualLateralErrorController
+from control.state_machine import ObstacleAvoidanceStateMachine
 
 # 尝试导入小车控制器
 try:
@@ -34,22 +35,12 @@ except ImportError:
 # --- 🚀 实时推理模块 (摄像头模式) ---
 # ---------------------------------------------------------------------------------
 
+# 导入统一日志配置
+from core.logging_config import setup_unified_logging, get_module_logger, log_system_initialization
+
 def setup_logging(log_file=None):
-    """配置日志系统"""
-    if log_file:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file, encoding='utf-8'),
-                logging.StreamHandler()
-            ]
-        )
-    else:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
+    """配置日志系统 - 使用统一的日志配置"""
+    return setup_unified_logging(log_file=log_file)
 
 def realtime_inference(model_path, device_id=0, camera_index=0, 
                       camera_width=640, camera_height=360,
@@ -59,7 +50,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       max_speed=1000.0, min_speed=5.0,
                       enable_web=False, no_gui=False, full_image_bird_eye=True,
                       edge_computing=False, pixels_per_unit=20, margin_ratio=0.1,
-                      ema_alpha=0.5, enable_smoothing=True):
+                      ema_alpha=0.5, enable_smoothing=True,
+                      enable_obstacle_detection=True, obstacle_config=None,
+                      obstacle_detection_interval=10, avoidance_left_speed=400,
+                      avoidance_right_speed=700, avoidance_duration=2.0,
+                      reverse_duration=2.0):
     """
     实时摄像头推理模式
     
@@ -73,6 +68,13 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         enable_control: 是否启用控制算法
         enable_web: 是否启用Web界面数据更新
         no_gui: 是否禁用GUI显示
+        enable_obstacle_detection: 是否启用障碍物检测
+        obstacle_config: 障碍物检测配置字典
+        obstacle_detection_interval: 障碍物检测间隔（帧数）
+        avoidance_left_speed: 避障时左轮速度
+        avoidance_right_speed: 避障时右轮速度
+        avoidance_duration: 避障动作持续时间（秒）
+        reverse_duration: 反向动作持续时间（秒）
         其他: 控制参数
     """
     # 由于需要访问Web界面数据，这些需要从外部传入或重新组织
@@ -118,6 +120,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         return
     
     # 设置摄像头参数
+    fourcc = cv2.VideoWriter.fourcc(*'MJPG')  # 设置MJPG编码以提高图像质量
+    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
     cap.set(cv2.CAP_PROP_FPS, 30)
@@ -151,6 +155,40 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
     transformer = PerspectiveTransformer()
     logger.info("🦅 透视变换器初始化完成")
     
+    # 初始化状态机
+    state_machine = ObstacleAvoidanceStateMachine(
+        avoidance_left_speed=avoidance_left_speed,
+        avoidance_right_speed=avoidance_right_speed,
+        avoidance_duration=avoidance_duration,
+        reverse_duration=reverse_duration,
+        obstacle_detection_interval=obstacle_detection_interval
+    )
+    
+    # 记录状态机配置到日志
+    log_system_initialization("状态机", {
+        "避障左轮速度": avoidance_left_speed,
+        "避障右轮速度": avoidance_right_speed,
+        "避障持续时间": f"{avoidance_duration}s",
+        "反向持续时间": f"{reverse_duration}s",
+        "障碍物检测间隔": f"{obstacle_detection_interval}帧"
+    })
+    
+    # 设置小车控制器（如果可用）
+    if 'car_controller' in globals() and car_controller is not None:
+        state_machine.set_car_controller(car_controller)
+        logger.info("🚗 状态机已连接到小车控制器")
+    
+    logger.info("🤖 状态机初始化完成")
+    
+    # 初始化障碍物检测器
+    obstacle_detector = None
+    if enable_obstacle_detection:
+        from vision.obstacle_detection import create_obstacle_detector
+        obstacle_detector = create_obstacle_detector(obstacle_config)
+        logger.info("🚧 障碍物检测器初始化完成")
+    else:
+        logger.info("⚠️ 障碍物检测已禁用")
+    
     # 初始化Web界面数据
     if enable_web:
         with web_data_lock:
@@ -175,12 +213,15 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             
             loop_start = time.time()
             
-            # 1. 预处理
+            # 更新状态机帧计数
+            state_machine.update_frame_count()
+            
+            # 1. 预处理（Atlas使用float16）
             preprocess_start = time.time()
-            input_data = preprocess_matched_resolution(frame, dtype=np.float16)
+            input_data = preprocess_matched_resolution(frame)
             preprocess_time = (time.time() - preprocess_start) * 1000
             
-            # 2. Atlas推理
+            # 2. Atlas NPU推理
             inference_start = time.time()
             outputs = model.infer([input_data])
             inference_time = (time.time() - inference_start) * 1000
@@ -217,7 +258,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             bird_eye_image, bird_eye_mask, view_params = transformer.transform_image_and_mask(
                 frame, lane_mask, pixels_per_unit=adjusted_pixels_per_unit, margin_ratio=margin_ratio, full_image=full_image_bird_eye)
             
-            # 路径规划 - 使用与单文件推理相同的参数
+            # 路径规划 - 使用传入的参数保持一致性
             control_map, path_data = create_control_map(
                 bird_eye_mask, view_params, 
                 add_grid=True, add_path=True,
@@ -225,10 +266,36 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 path_degree=3,
                 num_waypoints=20,
                 min_road_width=10,
-                edge_computing=True, 
+                edge_computing=edge_computing,  # 使用传入的参数
                 force_bottom_center=True
             )
             transform_time = (time.time() - transform_start) * 1000
+            
+            # 4.5. 障碍物检测（可选，按间隔执行）
+            obstacle_detection_time = 0
+            obstacle_result = None
+            obstacle_detected = False
+            
+            if enable_obstacle_detection and obstacle_detector and state_machine.is_obstacle_detection_frame():
+                obstacle_start = time.time()
+                
+                # 使用与单文件推理完全相同的障碍物检测流程
+                obstacle_result = obstacle_detector.detect_obstacles(frame, segmentation_mask=lane_mask)
+                
+                if obstacle_result['num_obstacles'] > 0:
+                    obstacle_detected = True
+                    logger.info(f"🚧 第{frame_count}帧检测到 {obstacle_result['num_obstacles']} 个障碍物")
+                    for i, obstacle in enumerate(obstacle_result['obstacles']):
+                        center_x, center_y = obstacle['center']
+                        confidence = obstacle['confidence']
+                        logger.info(f"   障碍物{i+1}: 中心({center_x}, {center_y}), 置信度{confidence:.2f}")
+                else:
+                    logger.info(f"🔍 第{frame_count}帧未检测到障碍物")
+                
+                obstacle_detection_time = (time.time() - obstacle_start) * 1000
+            
+            # 处理状态机逻辑
+            control_decision = state_machine.process_frame(obstacle_detected, obstacle_result)
             
             # 检查Web界面参数更新
             if enable_web and enable_control and controller:
@@ -253,10 +320,27 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                               f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm, "
                               f"阻尼系数={controller.curvature_damping}, EMA平滑={'启用' if controller.enable_smoothing else '禁用'}(α={controller.ema_alpha})")
             
-            # 5. 控制计算
+            # 5. 控制计算 - 根据状态机决策
             control_time = 0
             control_result = None
-            if enable_control and path_data is not None and controller is not None:
+            
+            if control_decision['override_control']:
+                # 状态机接管控制（避障模式）
+                control_start = time.time()
+                control_result = {
+                    'pwm_left': control_decision['left_speed'] if control_decision['left_speed'] is not None else 0,
+                    'pwm_right': control_decision['right_speed'] if control_decision['right_speed'] is not None else 0,
+                    'lateral_error': 0,  # 避障模式下横向误差为0
+                    'curvature_level': 0,  # 避障模式下曲率为0
+                    'turn_direction': 'obstacle_avoidance',
+                    'control_source': 'state_machine',
+                    'state_machine_mode': control_decision['mode']
+                }
+                control_time = (time.time() - control_start) * 1000
+                logger.info(f"🤖 状态机控制: {control_decision['message']}")
+                
+            elif enable_control and path_data is not None and controller is not None:
+                # 正常巡线模式
                 # 检查是否需要重置EMA状态（例如从紧急停车恢复或刚开始行驶）
                 # 优化版本：只检查lateral_error的EMA状态
                 with web_data_lock:
@@ -274,6 +358,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 
                 control_start = time.time()
                 control_result = controller.compute_wheel_pwm(path_data, view_params)
+                control_result['control_source'] = 'lane_following'
+                control_result['state_machine_mode'] = control_decision['mode']
                 control_time = (time.time() - control_start) * 1000
             
             # 6. 串口控制指令发送
@@ -339,6 +425,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             total_times["transform"] += int(transform_time)
             total_times["control"] += int(control_time)
             
+            # 添加障碍物检测时间统计
+            if "obstacle_detection" not in total_times:
+                total_times["obstacle_detection"] = 0
+            total_times["obstacle_detection"] += int(obstacle_detection_time)
+            
             pipeline_latency = (time.time() - loop_start) * 1000
             
             # 每20帧输出一次详细统计
@@ -351,13 +442,16 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 avg_postprocess = total_times["postprocess"] / frame_count
                 avg_transform = total_times["transform"] / frame_count
                 avg_control = total_times["control"] / frame_count
+                avg_obstacle_detection = total_times["obstacle_detection"] / frame_count
                 avg_total = sum(total_times.values()) / frame_count
                 
                 logger.info(f"📊 第{frame_count}帧性能分析:")
                 logger.info(f"   预处理: {preprocess_time:.1f}ms (平均: {avg_preprocess:.1f}ms)")
-                logger.info(f"   Atlas推理: {inference_time:.1f}ms (平均: {avg_inference:.1f}ms)")
+                logger.info(f"   Atlas NPU推理: {inference_time:.1f}ms (平均: {avg_inference:.1f}ms)")
                 logger.info(f"   后处理: {postprocess_time:.1f}ms (平均: {avg_postprocess:.1f}ms)")
                 logger.info(f"   透视变换: {transform_time:.1f}ms (平均: {avg_transform:.1f}ms)")
+                if enable_obstacle_detection:
+                    logger.info(f"   障碍物检测: {obstacle_detection_time:.1f}ms (平均: {avg_obstacle_detection:.1f}ms)")
                 if enable_control:
                     logger.info(f"   控制计算: {control_time:.1f}ms (平均: {avg_control:.1f}ms)")
                 logger.info(f"   总延迟: {pipeline_latency:.1f}ms (平均: {avg_total:.1f}ms)")
@@ -367,6 +461,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 if control_result:
                     logger.info(f"🚗 控制指令: 左轮={control_result['pwm_left']:.0f}, 右轮={control_result['pwm_right']:.0f}")
                     logger.info(f"   横向误差: {control_result['lateral_error']:.2f}cm, 曲率: {control_result.get('curvature_level', 0):.4f}")
+                    logger.info(f"   控制源: {control_result.get('control_source', 'unknown')}, 状态: {control_result.get('state_machine_mode', 'unknown')}")
+                
+                # 状态机信息
+                state_info = state_machine.get_state_info()
+                logger.info(f"🤖 状态机: {state_info['current_state']}, 状态时间: {state_info['time_in_state']:.2f}s")
             
             # 检测车道线
             lane_pixels = np.sum(lane_mask > 0)
@@ -376,13 +475,16 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
             # 每帧简要日志
             if control_result:
                 logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%, "
-                          f"控制[L:{control_result['pwm_left']:.0f}, R:{control_result['pwm_right']:.0f}]")
+                          f"控制[L:{control_result['pwm_left']:.0f}, R:{control_result['pwm_right']:.0f}], "
+                          f"状态: {control_result.get('state_machine_mode', 'unknown')}")
                 # 每帧详细控制信息
                 logger.info(f"   🚗 横向误差: {control_result['lateral_error']:.2f}cm, "
                           f"曲率: {control_result.get('curvature_level', 0):.4f}, "
-                          f"转向: {control_result.get('turn_direction', 'unknown')}")
+                          f"转向: {control_result.get('turn_direction', 'unknown')}, "
+                          f"控制源: {control_result.get('control_source', 'unknown')}")
             else:
-                logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%")
+                logger.info(f"帧{frame_count}: 延迟{pipeline_latency:.1f}ms, 车道线{lane_ratio:.1f}%, "
+                          f"状态: {state_machine.get_current_state().value}")
             
             # 更新Web界面数据
             if enable_web:
@@ -408,7 +510,13 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         'serial_connected': web_data.get('serial_connected', False),
                         'car_driving': web_data.get('car_driving', False),
                         'control_enabled': web_data.get('control_enabled', False),
-                        'last_command_sent': (web_data.get('last_control_command') or {}).get('timestamp', 0)
+                        'last_command_sent': (web_data.get('last_control_command') or {}).get('timestamp', 0),
+                        # 状态机相关数据
+                        'state_machine_state': state_machine.get_current_state().value,
+                        'control_source': control_result.get('control_source', 'none') if control_result else 'none',
+                        'obstacle_detected': obstacle_detected,
+                        'obstacle_count': obstacle_result['num_obstacles'] if obstacle_result else 0,
+                        'state_time': state_machine.get_state_info()['time_in_state']
                     }
             
             # 检测退出条件（仅在有GUI时检查按键）
@@ -432,6 +540,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         import traceback
         logger.error(traceback.format_exc())
     finally:
+        # 强制停止状态机
+        if 'state_machine' in locals():
+            state_machine.force_stop()
+            logger.info("🤖 状态机已强制停止")
+        
         # 更新Web界面状态
         if enable_web:
             with web_data_lock:
