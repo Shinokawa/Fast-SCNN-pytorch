@@ -59,7 +59,22 @@ web_data = {
     'emergency_stop': False,      # 紧急停车状态
     'last_control_command': None, # 最后发送的控制指令
     'serial_port': '/dev/ttyAMA0', # 串口设备
-    'control_enabled': False      # 控制算法是否激活
+    'control_enabled': False,     # 控制算法是否激活
+    # 避障相关状态
+    'obstacle_detection_enabled': False,  # 障碍物检测是否启用
+    'obstacle_detected': False,           # 是否检测到障碍物
+    'obstacle_count': 0,                  # 检测到的障碍物数量
+    'avoidance_active': False,            # 避障是否激活
+    'state_machine_state': 'lane_following', # 状态机当前状态
+    'state_time': 0.0,                    # 当前状态持续时间
+    'control_source': 'none',             # 控制来源(lane_following/obstacle_avoidance)
+    'avoidance_command': None,            # 避障指令
+    'avoidance_config': {                 # 避障配置
+        'left_speed': 400,
+        'right_speed': 700,
+        'duration': 2.0,
+        'reverse_duration': 2.0
+    }
 }
 web_data_lock = Lock()
 
@@ -365,6 +380,14 @@ WEB_TEMPLATE = """
                 <div class="stat-value" id="right-pwm">0</div>
                 <div class="stat-label">右轮PWM</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-value" id="lateral-error">0.0</div>
+                <div class="stat-label">横向误差(cm)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="path-curvature">0.0</div>
+                <div class="stat-label">路径曲率</div>
+            </div>
         </div>
         
         <div class="param-panel">
@@ -437,6 +460,52 @@ WEB_TEMPLATE = """
             </div>
         </div>
         
+        <div class="control-panel">
+            <h3>🚧 避障状态</h3>
+            <div class="control-status">
+                <div class="status-item">
+                    <span class="status-label">障碍物检测:</span>
+                    <span id="obstacle-detection-status" class="status-value status-disconnected">未启用</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">检测到障碍物:</span>
+                    <span id="obstacle-detected-status" class="status-value status-stopped">无</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">障碍物数量:</span>
+                    <span id="obstacle-count" class="status-value">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">避障状态:</span>
+                    <span id="avoidance-status" class="status-value status-stopped">未激活</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">状态机模式:</span>
+                    <span id="state-machine-mode" class="status-value">lane_following</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">控制来源:</span>
+                    <span id="control-source" class="status-value">none</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">状态持续时间:</span>
+                    <span id="state-time" class="status-value">0.0s</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">连续避障次数:</span>
+                    <span id="consecutive-avoidance-count" class="status-value">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">避障保护:</span>
+                    <span id="avoidance-protection" class="status-value status-stopped">未激活</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">冷却剩余时间:</span>
+                    <span id="avoidance-cooldown" class="status-value">0.0s</span>
+                </div>
+            </div>
+        </div>
+        
         <div class="image-panel">
             <h3>🗺️ 实时控制地图</h3>
             <img id="control-map" class="control-map" src="/api/control_map" alt="控制地图加载中...">
@@ -462,6 +531,8 @@ WEB_TEMPLATE = """
                 document.getElementById('lane-ratio').textContent = (data.lane_ratio || 0).toFixed(1);
                 document.getElementById('left-pwm').textContent = Math.round(data.left_pwm || 0);
                 document.getElementById('right-pwm').textContent = Math.round(data.right_pwm || 0);
+                document.getElementById('lateral-error').textContent = (data.lateral_error || 0).toFixed(1);
+                document.getElementById('path-curvature').textContent = (data.path_curvature || 0).toFixed(3);
                 
                 // 更新状态指示器
                 const statusIndicator = document.getElementById('status-indicator');
@@ -474,12 +545,98 @@ WEB_TEMPLATE = """
                     statusText.textContent = '系统停止';
                 }
                 
+                // 更新避障状态
+                updateAvoidanceStatus(data);
+                
                 // 添加新日志条目
                 if (data.latest_log) {
                     addLogEntry(data.latest_log);
                 }
             })
             .catch(error => console.error('获取状态失败:', error));
+        }
+        
+        function updateAvoidanceStatus(data) {
+            // 更新障碍物检测状态
+            const obstacleDetectionStatus = document.getElementById('obstacle-detection-status');
+            if (data.obstacle_detection_enabled) {
+                obstacleDetectionStatus.textContent = '已启用';
+                obstacleDetectionStatus.className = 'status-value status-connected';
+            } else {
+                obstacleDetectionStatus.textContent = '未启用';
+                obstacleDetectionStatus.className = 'status-value status-disconnected';
+            }
+            
+            // 更新障碍物检测结果
+            const obstacleDetectedStatus = document.getElementById('obstacle-detected-status');
+            if (data.obstacle_detected) {
+                obstacleDetectedStatus.textContent = '检测到';
+                obstacleDetectedStatus.className = 'status-value status-driving';
+            } else {
+                obstacleDetectedStatus.textContent = '无';
+                obstacleDetectedStatus.className = 'status-value status-stopped';
+            }
+            
+            // 更新障碍物数量
+            document.getElementById('obstacle-count').textContent = data.obstacle_count || 0;
+            
+            // 更新避障状态
+            const avoidanceStatus = document.getElementById('avoidance-status');
+            if (data.avoidance_active) {
+                avoidanceStatus.textContent = '激活中';
+                avoidanceStatus.className = 'status-value status-driving';
+            } else {
+                avoidanceStatus.textContent = '未激活';
+                avoidanceStatus.className = 'status-value status-stopped';
+            }
+            
+            // 更新状态机模式
+            const stateMachineMode = document.getElementById('state-machine-mode');
+            stateMachineMode.textContent = data.state_machine_state || 'unknown';
+            
+            // 根据状态机模式设置颜色
+            if (data.state_machine_state === 'lane_following') {
+                stateMachineMode.className = 'status-value status-connected';
+            } else if (data.state_machine_state === 'obstacle_avoidance') {
+                stateMachineMode.className = 'status-value status-driving';
+            } else if (data.state_machine_state === 'emergency_stop') {
+                stateMachineMode.className = 'status-value status-disconnected';
+            } else {
+                stateMachineMode.className = 'status-value status-stopped';
+            }
+            
+            // 更新控制来源
+            const controlSource = document.getElementById('control-source');
+            controlSource.textContent = data.control_source || 'none';
+            
+            // 根据控制来源设置颜色
+            if (data.control_source === 'lane_following') {
+                controlSource.className = 'status-value status-connected';
+            } else if (data.control_source === 'obstacle_avoidance') {
+                controlSource.className = 'status-value status-driving';
+            } else {
+                controlSource.className = 'status-value status-stopped';
+            }
+            
+            // 更新状态持续时间
+            document.getElementById('state-time').textContent = (data.state_time || 0).toFixed(1) + 's';
+            
+            // 更新防死循环保护状态
+            document.getElementById('consecutive-avoidance-count').textContent = data.consecutive_avoidance_count || 0;
+            
+            // 更新避障保护状态
+            const avoidanceProtection = document.getElementById('avoidance-protection');
+            if (data.avoidance_protection_active) {
+                avoidanceProtection.textContent = '激活中';
+                avoidanceProtection.className = 'status-value status-driving';
+            } else {
+                avoidanceProtection.textContent = '未激活';
+                avoidanceProtection.className = 'status-value status-stopped';
+            }
+            
+            // 更新冷却剩余时间
+            const cooldownTime = data.avoidance_cooldown_remaining || 0;
+            document.getElementById('avoidance-cooldown').textContent = cooldownTime.toFixed(1) + 's';
         }
         
         function addLogEntry(logText) {
@@ -737,6 +894,15 @@ def create_web_app():
                 stats['fps'] = web_data['frame_count'] / elapsed if elapsed > 0 else 0
             else:
                 stats['fps'] = 0
+            
+            # 添加避障相关状态
+            stats['obstacle_detection_enabled'] = web_data.get('obstacle_detection_enabled', False)
+            stats['obstacle_detected'] = web_data.get('obstacle_detected', False)
+            stats['obstacle_count'] = web_data.get('obstacle_count', 0)
+            stats['avoidance_active'] = web_data.get('avoidance_active', False)
+            stats['state_machine_state'] = web_data.get('state_machine_state', 'unknown')
+            stats['state_time'] = web_data.get('state_time', 0.0)
+            stats['control_source'] = web_data.get('control_source', 'none')
         
         return jsonify(stats)
     

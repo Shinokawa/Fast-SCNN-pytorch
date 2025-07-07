@@ -68,6 +68,13 @@ class ObstacleAvoidanceStateMachine:
         self.state_start_time = time.time()
         self.state_lock = threading.Lock()
         
+        # 🚀 防死循环保护机制
+        self.last_avoidance_time = 0  # 上次避障完成的时间
+        self.avoidance_cooldown = 5.0  # 避障冷却时间（秒）
+        self.consecutive_avoidance_count = 0  # 连续避障次数
+        self.max_consecutive_avoidances = 3  # 最大连续避障次数
+        self.avoidance_reset_time = 10.0  # 避障计数重置时间（秒）
+        
         # 回调函数
         self.on_state_change = None
         self.car_controller = None
@@ -81,7 +88,10 @@ class ObstacleAvoidanceStateMachine:
             "避障右轮速度": avoidance_right_speed,
             "避障持续时间": f"{avoidance_duration}s",
             "反向持续时间": f"{reverse_duration}s",
-            "障碍物检测间隔": f"{obstacle_detection_interval}帧"
+            "障碍物检测间隔": f"{obstacle_detection_interval}帧",
+            "避障冷却时间": f"{self.avoidance_cooldown}s",
+            "最大连续避障次数": self.max_consecutive_avoidances,
+            "避障计数重置时间": f"{self.avoidance_reset_time}s"
         }
         log_system_initialization("障碍物避障状态机", config)
     
@@ -107,6 +117,50 @@ class ObstacleAvoidanceStateMachine:
     def update_frame_count(self):
         """更新帧计数"""
         self.frame_count += 1
+    
+    def is_avoidance_allowed(self) -> bool:
+        """
+        检查是否允许进行避障（防死循环保护）
+        
+        返回:
+            bool: True表示允许避障，False表示被保护机制阻止
+        """
+        current_time = time.time()
+        
+        # 检查避障冷却时间
+        time_since_last_avoidance = current_time - self.last_avoidance_time
+        if time_since_last_avoidance < self.avoidance_cooldown:
+            self.logger.warning(f"🛡️ 避障冷却中，剩余{self.avoidance_cooldown - time_since_last_avoidance:.1f}秒")
+            return False
+        
+        # 检查连续避障次数限制
+        if self.consecutive_avoidance_count >= self.max_consecutive_avoidances:
+            self.logger.warning(f"🛡️ 连续避障次数达到上限({self.max_consecutive_avoidances})，拒绝避障")
+            return False
+        
+        return True
+    
+    def update_avoidance_tracking(self):
+        """更新避障跟踪信息（记录避障开始）"""
+        # 记录避障开始
+        self.consecutive_avoidance_count += 1
+        self.logger.info(f"🚧 开始第{self.consecutive_avoidance_count}次避障")
+    
+    def _check_and_reset_avoidance_count(self):
+        """检查并重置避障计数（如果需要）"""
+        current_time = time.time()
+        
+        # 如果距离上次避障时间超过重置时间，重置计数
+        if (self.last_avoidance_time > 0 and 
+            current_time - self.last_avoidance_time > self.avoidance_reset_time and
+            self.consecutive_avoidance_count > 0):
+            self.logger.info(f"🔄 避障计数重置：{self.consecutive_avoidance_count} → 0")
+            self.consecutive_avoidance_count = 0
+    
+    def complete_avoidance_cycle(self):
+        """完成一次避障循环"""
+        self.last_avoidance_time = time.time()
+        self.logger.info(f"✅ 避障循环完成，进入{self.avoidance_cooldown}秒冷却期")
     
     def _change_state(self, new_state: CarState):
         """内部状态切换方法"""
@@ -144,9 +198,26 @@ class ObstacleAvoidanceStateMachine:
             if obstacle_detected and self.is_obstacle_detection_frame():
                 num_obstacles = obstacle_result['num_obstacles'] if obstacle_result else 0
                 self.logger.info(f"🚧 检测到障碍物: {num_obstacles}个")
-                self._change_state(CarState.OBSTACLE_DETECTED)
-                return self._get_control_decision()
+                
+                # 🛡️ 应用防死循环保护机制
+                if self.is_avoidance_allowed():
+                    self.update_avoidance_tracking()
+                    self._change_state(CarState.OBSTACLE_DETECTED)
+                    return self._get_control_decision()
+                else:
+                    # 被保护机制阻止，继续巡线但记录警告
+                    self.logger.warning("🛡️ 避障被保护机制阻止，继续巡线模式")
+                    return {
+                        'mode': 'lane_following_protected',
+                        'override_control': False,
+                        'left_speed': None,
+                        'right_speed': None,
+                        'message': '巡线模式(避障保护激活)'
+                    }
             else:
+                # 检查并重置避障计数（如果需要）
+                self._check_and_reset_avoidance_count()
+                
                 # 正常巡线，返回控制权给巡线算法
                 return {
                     'mode': 'lane_following',
@@ -178,6 +249,7 @@ class ObstacleAvoidanceStateMachine:
             
         elif current_state == CarState.RETURNING_TO_LANE:
             # 返回巡线：立即切换到巡线模式
+            self.complete_avoidance_cycle()  # 🛡️ 标记避障循环完成
             self._change_state(CarState.LANE_FOLLOWING)
             self.logger.info("✅ 已返回巡线模式")
             return self._get_control_decision()
@@ -267,13 +339,20 @@ class ObstacleAvoidanceStateMachine:
         """获取状态机信息"""
         current_time = time.time()
         time_in_state = current_time - self.state_start_time
+        time_since_last_avoidance = current_time - self.last_avoidance_time if self.last_avoidance_time > 0 else float('inf')
         
         return {
             'current_state': self.current_state.value,
             'previous_state': self.previous_state.value if self.previous_state else None,
             'time_in_state': time_in_state,
             'frame_count': self.frame_count,
-            'next_obstacle_detection_frame': self.obstacle_detection_interval - (self.frame_count % self.obstacle_detection_interval)
+            'next_obstacle_detection_frame': self.obstacle_detection_interval - (self.frame_count % self.obstacle_detection_interval),
+            # 🛡️ 防死循环保护状态
+            'consecutive_avoidance_count': self.consecutive_avoidance_count,
+            'max_consecutive_avoidances': self.max_consecutive_avoidances,
+            'time_since_last_avoidance': time_since_last_avoidance,
+            'avoidance_cooldown_remaining': max(0, self.avoidance_cooldown - time_since_last_avoidance),
+            'avoidance_protection_active': not self.is_avoidance_allowed()
         }
     
     def print_state_info(self):

@@ -367,7 +367,10 @@ def main():
                 avoidance_left_speed=args.avoidance_left_speed,
                 avoidance_right_speed=args.avoidance_right_speed,
                 avoidance_duration=args.avoidance_duration,
-                reverse_duration=args.reverse_duration
+                reverse_duration=args.reverse_duration,
+                # 传递Web数据
+                web_data=web_data,
+                web_data_lock=web_data_lock
             )
             return
         

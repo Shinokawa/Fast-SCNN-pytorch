@@ -54,7 +54,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       enable_obstacle_detection=True, obstacle_config=None,
                       obstacle_detection_interval=10, avoidance_left_speed=400,
                       avoidance_right_speed=700, avoidance_duration=2.0,
-                      reverse_duration=2.0):
+                      reverse_duration=2.0, web_data=None, web_data_lock=None):
     """
     实时摄像头推理模式
     
@@ -78,26 +78,27 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         其他: 控制参数
     """
     # 由于需要访问Web界面数据，这些需要从外部传入或重新组织
-    # 暂时使用局部变量来避免循环依赖
+    # 使用传入的web_data和web_data_lock，或创建本地变量
     global car_controller
     car_controller = None
     
-    # 模拟web_data和web_data_lock（在实际应用中应该从外部传入）
-    web_data = {
-        'is_running': False,
-        'frame_count': 0,
-        'start_time': None,
-        'latest_control_map': None,
-        'latest_stats': {},
-        'control_params': {},
-        'params_updated': False,
-        'serial_connected': False,
-        'car_driving': False,
-        'emergency_stop': False,
-        'last_control_command': None,
-        'control_enabled': False
-    }
-    web_data_lock = Lock()
+    # 使用传入的web_data参数，如果为None则创建本地变量
+    if web_data is None or web_data_lock is None:
+        web_data = {
+            'is_running': False,
+            'frame_count': 0,
+            'start_time': None,
+            'latest_control_map': None,
+            'latest_stats': {},
+            'control_params': {},
+            'params_updated': False,
+            'serial_connected': False,
+            'car_driving': False,
+            'emergency_stop': False,
+            'last_control_command': None,
+            'control_enabled': False
+        }
+        web_data_lock = Lock()
     
     # 配置日志
     setup_logging(log_file)
@@ -499,6 +500,25 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         print("⚠️ 控制地图为None")
                         web_data['latest_control_map'] = None
                         
+                    # 更新避障相关的顶级状态
+                    web_data['obstacle_detection_enabled'] = enable_obstacle_detection
+                    web_data['obstacle_detected'] = obstacle_detected
+                    web_data['obstacle_count'] = obstacle_result['num_obstacles'] if obstacle_result else 0
+                    web_data['state_machine_state'] = state_machine.get_current_state().value
+                    
+                    # 获取完整的状态机信息（包含防死循环保护状态）
+                    state_info = state_machine.get_state_info()
+                    web_data['state_time'] = state_info['time_in_state']
+                    web_data['consecutive_avoidance_count'] = state_info['consecutive_avoidance_count']
+                    web_data['avoidance_protection_active'] = state_info['avoidance_protection_active']
+                    web_data['avoidance_cooldown_remaining'] = state_info['avoidance_cooldown_remaining']
+                    
+                    web_data['control_source'] = control_result.get('control_source', 'none') if control_result else 'none'
+                    
+                    # 检查是否正在避障
+                    current_state = state_machine.get_current_state().value
+                    web_data['avoidance_active'] = current_state in ['obstacle_avoidance', 'reversing', 'emergency_stop']
+                    
                     web_data['latest_stats'] = {
                         'latency': pipeline_latency,
                         'lane_ratio': lane_ratio,
@@ -512,11 +532,15 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         'control_enabled': web_data.get('control_enabled', False),
                         'last_command_sent': (web_data.get('last_control_command') or {}).get('timestamp', 0),
                         # 状态机相关数据
-                        'state_machine_state': state_machine.get_current_state().value,
+                        'state_machine_state': current_state,
                         'control_source': control_result.get('control_source', 'none') if control_result else 'none',
                         'obstacle_detected': obstacle_detected,
                         'obstacle_count': obstacle_result['num_obstacles'] if obstacle_result else 0,
-                        'state_time': state_machine.get_state_info()['time_in_state']
+                        'state_time': state_info['time_in_state'],
+                        # 🛡️ 防死循环保护状态
+                        'consecutive_avoidance_count': state_info['consecutive_avoidance_count'],
+                        'avoidance_protection_active': state_info['avoidance_protection_active'],
+                        'avoidance_cooldown_remaining': state_info['avoidance_cooldown_remaining']
                     }
             
             # 检测退出条件（仅在有GUI时检查按键）
