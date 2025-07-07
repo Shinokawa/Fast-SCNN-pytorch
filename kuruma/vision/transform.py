@@ -9,6 +9,8 @@
 
 import numpy as np
 import cv2
+import logging
+from core.logging_config import get_module_logger
 
 # 导入标定模块
 from core.calibration import get_corrected_calibration, get_builtin_calibration
@@ -16,6 +18,8 @@ from core.calibration import get_corrected_calibration, get_builtin_calibration
 # ---------------------------------------------------------------------------------
 # --- 🦅 透视变换模块 (鸟瞰图生成) ---
 # ---------------------------------------------------------------------------------
+
+logger = get_module_logger(__name__)
 
 class PerspectiveTransformer:
     """透视变换器，用于生成鸟瞰图"""
@@ -31,10 +35,10 @@ class PerspectiveTransformer:
         if calibration_data is None:
             if use_corrected:
                 calibration_data = get_corrected_calibration()
-                print("✅ 使用校正后的标定参数（确保矩形鸟瞰图）")
+                logger.info("✅ 使用校正后的标定参数（确保矩形鸟瞰图）")
             else:
                 calibration_data = get_builtin_calibration()
-                print("⚠️ 使用原始标定参数（可能产生梯形）")
+                logger.warning("⚠️ 使用原始标定参数（可能产生梯形）")
         
         self.calibration_data = calibration_data
         self.transform_matrix = np.array(calibration_data['transform_matrix'], dtype=np.float32)
@@ -43,8 +47,8 @@ class PerspectiveTransformer:
         self.world_points = calibration_data['world_points']
         self.original_image_size = calibration_data['image_size']
         
-        print(f"✅ 透视变换器已初始化")
-        print(f"📏 标定图像尺寸: {self.original_image_size[0]} × {self.original_image_size[1]}")
+        logger.info("✅ 透视变换器已初始化")
+        logger.info(f"📏 标定图像尺寸: {self.original_image_size[0]} × {self.original_image_size[1]}")
     
     def calculate_bird_eye_params(self, pixels_per_unit=20, margin_ratio=0.1, full_image=True):
         """
@@ -152,8 +156,8 @@ class PerspectiveTransformer:
         orig_width, orig_height = self.original_image_size
         
         if input_width != orig_width or input_height != orig_height:
-            print(f"⚠️ 图像尺寸不匹配: {input_width}×{input_height} vs {orig_width}×{orig_height}")
-            print("🔄 自动调整变换矩阵...")
+            logger.warning(f"⚠️ 图像尺寸不匹配: {input_width}×{input_height} vs {orig_width}×{orig_height}")
+            logger.info("🔄 自动调整变换矩阵...")
             
             # 计算缩放因子
             scale_x = input_width / orig_width

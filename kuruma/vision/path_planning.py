@@ -12,16 +12,21 @@
 
 import numpy as np
 import cv2
+import logging
+from core.logging_config import get_module_logger
+
+# 🔧 修复：先定义logger，再检查scipy
+logger = get_module_logger(__name__)
 
 # 检查scipy是否可用
 try:
     from scipy.interpolate import interp1d, splprep, splev
     from scipy.ndimage import gaussian_filter1d
     SCIPY_AVAILABLE = True
-    print("✅ SciPy已加载，支持高级路径平滑")
+    logger.info("✅ SciPy已加载，支持高级路径平滑")
 except ImportError:
     SCIPY_AVAILABLE = False
-    print("⚠️ SciPy未安装，将使用numpy基础拟合")
+    logger.warning("⚠️ SciPy未安装，将使用numpy基础拟合")
 
 # 导入标定模块
 from core.calibration import get_corrected_calibration
@@ -80,13 +85,13 @@ def create_control_map(bird_eye_mask, view_params, add_grid=True, add_path=True,
             # 在控制地图上可视化路径
             control_map = visualize_path_on_control_map(control_map, path_data, view_params)
             
-            print(f"🛣️ 路径规划完成:")
-            print(f"   - 中心线点数: {path_data['num_centerline_points']}")
-            print(f"   - 路径点数: {path_data['num_waypoints']}")
-            print(f"   - 路径长度: {path_data['path_length']:.1f} cm")
+            logger.info("🛣️ 路径规划完成:")
+            logger.info(f"   - 中心线点数: {path_data['num_centerline_points']}")
+            logger.info(f"   - 路径点数: {path_data['num_waypoints']}")
+            logger.info(f"   - 路径长度: {path_data['path_length']:.1f} cm")
             
         except Exception as e:
-            print(f"⚠️ 路径规划失败: {e}")
+            logger.warning(f"⚠️ 路径规划失败: {e}")
             path_data = None
     
     if add_grid:
@@ -364,11 +369,11 @@ class PathPlanner:
                 final_x = final_x[sorted_indices]
                 weights = weights[sorted_indices]
                 
-                print(f"🎯 强制拟合曲线过底边中点: ({bottom_center[0]:.1f}, {bottom_center[1]:.1f}) cm，权重: {1e6}")
+                logger.info(f"🎯 强制拟合曲线过底边中点: ({bottom_center[0]:.1f}, {bottom_center[1]:.1f}) cm，权重: {1e6}")
 
         # 确保点数足够拟合
         if len(final_y) <= degree:
-            print(f"⚠️ 拟合点数 ({len(final_y)}) 不足，无法进行 {degree} 阶拟合。")
+            logger.warning(f"⚠️ 拟合点数 ({len(final_y)}) 不足，无法进行 {degree} 阶拟合。")
             return None, None
 
         if method == 'polynomial':
@@ -379,7 +384,7 @@ class PathPlanner:
         elif method == 'spline':
             # 样条插值默认会穿过所有点，但这里为了统一，也使用多项式
             # 如果需要样条，也需要拟合 x=f(y)
-            print("⚠️ 样条方法暂不支持权重，强制使用多项式拟合以确保过中点。")
+            logger.warning("⚠️ 样条方法暂不支持权重，强制使用多项式拟合以确保过中点。")
             fit_params = np.polyfit(final_y, final_x, degree, w=weights)
             smooth_path_func = np.poly1d(fit_params)
         
@@ -398,7 +403,7 @@ class PathPlanner:
                 transform_matrix = np.array(self.view_params['image_to_world_matrix'], dtype=np.float32)
             else:
                 # 如果没有，作为回退，从校正配置中获取
-                print("⚠️ 在view_params中未找到image_to_world_matrix，尝试从内置校准获取。")
+                logger.warning("⚠️ 在view_params中未找到image_to_world_matrix，尝试从内置校准获取。")
                 transform_matrix = get_corrected_calibration()
             
             # 640×360图像底边中点的像素坐标
@@ -412,7 +417,7 @@ class PathPlanner:
             return (world_x, world_y)
             
         except Exception as e:
-            print(f"⚠️ 无法计算底边中点世界坐标: {e}")
+            logger.warning(f"⚠️ 无法计算底边中点世界坐标: {e}")
             return None
     
     def generate_waypoints(self, smooth_path_func, num_points=20, y_range=None):

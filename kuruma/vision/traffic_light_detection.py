@@ -25,6 +25,9 @@ from typing import Dict, Optional, Tuple
 # 导入统一日志配置
 from core.logging_config import get_module_logger
 
+# 🔧 修复：先定义logger
+logger = get_module_logger(__name__)
+
 # 导入Atlas会话管理器
 from core.atlas_session_manager import get_atlas_session, create_tensor
 
