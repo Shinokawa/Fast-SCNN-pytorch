@@ -13,6 +13,11 @@ import time
 import numpy as np
 import cv2
 from pathlib import Path
+import logging
+from core.logging_config import get_module_logger
+
+# 🔧 修复：先定义logger
+logger = get_module_logger(__name__)
 
 # 导入Atlas会话管理器
 from core.atlas_session_manager import get_atlas_session, create_tensor
@@ -41,8 +46,8 @@ class AtlasInferSession:
         self.model_path = model_path
         self.model_name = model_name
         
-        print(f"🧠 使用Atlas NPU设备: {device_id}")
-        print(f"📊 加载OM模型: {model_path}")
+        logger.info(f"🧠 使用Atlas NPU设备: {device_id}")
+        logger.info(f"📊 加载OM模型: {model_path}")
         
         # 获取Atlas会话管理器
         self.session_manager = get_atlas_session()
@@ -56,7 +61,7 @@ class AtlasInferSession:
         if self.model is None:
             raise RuntimeError(f"模型加载失败: {model_path}")
         
-        print(f"✅ Atlas推理会话初始化完成")
+        logger.info(f"✅ Atlas推理会话初始化完成")
     
     def infer(self, inputs):
         """
@@ -165,7 +170,7 @@ def inference_single_image(image_path, model_path, device_id=0,
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     
-    print(f"🖼️  加载图片: {image_path}")
+    logger.info(f"🖼️  加载图片: {image_path}")
     
     # 1. 加载图片
     load_start = time.time()
@@ -176,34 +181,34 @@ def inference_single_image(image_path, model_path, device_id=0,
     original_height, original_width = img_bgr.shape[:2]
     load_time = (time.time() - load_start) * 1000
     
-    print(f"📏 原始尺寸: {original_width}×{original_height}")
+    logger.info(f"📏 原始尺寸: {original_width}×{original_height}")
     
     # 2. 加载Atlas模型
-    print(f"🧠 加载Atlas OM模型: {model_path}")
+    logger.info(f"🧠 加载Atlas OM模型: {model_path}")
     model_start = time.time()
     model = AtlasInferSession(device_id, model_path)
     model_load_time = (time.time() - model_start) * 1000
-    print(f"✅ 模型加载完成 ({model_load_time:.1f}ms)")
+    logger.info(f"✅ 模型加载完成 ({model_load_time:.1f}ms)")
     
     # 3. 预处理（使用float16以匹配Atlas模型）
-    print("🔄 开始预处理...")
+    logger.info("🔄 开始预处理...")
     preprocess_start = time.time()
     input_data = preprocess_matched_resolution(img_bgr)
     preprocess_time = (time.time() - preprocess_start) * 1000
     
-    print(f"📊 输入张量形状: {input_data.shape}")
-    print(f"📊 数据类型: {input_data.dtype}")
+    logger.info(f"📊 输入张量形状: {input_data.shape}")
+    logger.info(f"📊 数据类型: {input_data.dtype}")
     
     # 4. Atlas NPU推理
-    print("🚀 开始Atlas NPU推理...")
+    logger.info("🚀 开始Atlas NPU推理...")
     inference_start = time.time()
     outputs = model.infer([input_data])
     inference_time = (time.time() - inference_start) * 1000
     
-    print(f"📊 输出张量形状: {outputs[0].shape}")
+    logger.info(f"📊 输出张量形状: {outputs[0].shape}")
     
     # 5. 后处理
-    print("🔄 开始后处理...")
+    logger.info("🔄 开始后处理...")
     postprocess_start = time.time()
     lane_mask = postprocess_matched_resolution(outputs[0], original_width, original_height)
     postprocess_time = (time.time() - postprocess_start) * 1000
@@ -215,7 +220,7 @@ def inference_single_image(image_path, model_path, device_id=0,
     obstacle_debug_vis = None
     
     if enable_obstacle_detection:
-        print("🚧 开始障碍物检测...")
+        logger.info("🚧 开始障碍物检测...")
         obstacle_start = time.time()
         
         # 导入障碍物检测模块
@@ -236,11 +241,11 @@ def inference_single_image(image_path, model_path, device_id=0,
         
         obstacle_detection_time = (time.time() - obstacle_start) * 1000
         
-        print(f"🚧 检测到 {obstacle_result['num_obstacles']} 个障碍物")
+        logger.info(f"🚧 检测到 {obstacle_result['num_obstacles']} 个障碍物")
         for i, obstacle in enumerate(obstacle_result['obstacles']):
             center_x, center_y = obstacle['center']
             confidence = obstacle['confidence']
-            print(f"   障碍物{i+1}: 中心({center_x}, {center_y}), 置信度{confidence:.2f}")
+            logger.info(f"   障碍物{i+1}: 中心({center_x}, {center_y}), 置信度{confidence:.2f}")
     
     # 6. 透视变换（可选）
     transform_time = 0
@@ -251,7 +256,7 @@ def inference_single_image(image_path, model_path, device_id=0,
     view_params = None
     
     if bird_eye:
-        print("🦅 开始透视变换...")
+        logger.info("🦅 开始透视变换...")
         transform_start = time.time()
         
         # 需要导入PerspectiveTransformer类
@@ -262,20 +267,20 @@ def inference_single_image(image_path, model_path, device_id=0,
             if full_image_bird_eye:
                 # 边缘计算+完整图像：超低像素密度
                 adjusted_pixels_per_unit = 1  # 固定1像素/单位，减少400倍计算量
-                print(f"⚡ 边缘计算极致优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
+                logger.info(f"⚡ 边缘计算极致优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
             else:
                 # 边缘计算+A4区域：低像素密度
                 adjusted_pixels_per_unit = 2  # 固定2像素/单位
-                print(f"⚡ 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
+                logger.info(f"⚡ 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
         else:
             if full_image_bird_eye:
                 # 完整图像模式：极低像素密度（边缘计算友好）
                 adjusted_pixels_per_unit = max(1, pixels_per_unit // 20)  # 最低1像素/单位，减少400倍计算量
-                print(f"🚀 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位（减少{pixels_per_unit//adjusted_pixels_per_unit}倍计算量）")
+                logger.info(f"🚀 边缘计算优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位（减少{pixels_per_unit//adjusted_pixels_per_unit}倍计算量）")
             else:
                 # A4纸区域模式：中等优化
                 adjusted_pixels_per_unit = max(2, pixels_per_unit // 4)  # 最低2像素/单位
-                print(f"🔧 性能优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
+                logger.info(f"🔧 性能优化：像素密度 {pixels_per_unit} → {adjusted_pixels_per_unit} 像素/单位")
         
         transformer = PerspectiveTransformer()  # 使用内置标定参数
         bird_eye_image, bird_eye_mask, view_params = transformer.transform_image_and_mask(
@@ -286,7 +291,7 @@ def inference_single_image(image_path, model_path, device_id=0,
         # 6.5. 路径规划（可选）
         path_planning_time = 0
         if save_control_map:
-            print("🛣️ 开始路径规划...")
+            logger.info("🛣️ 开始路径规划...")
             path_start = time.time()
             
             # 需要导入create_control_map函数
@@ -305,9 +310,9 @@ def inference_single_image(image_path, model_path, device_id=0,
         else:
             path_data = None
         
-        print(f"📐 鸟瞰图尺寸: {view_params['output_size'][0]}×{view_params['output_size'][1]}")
+        logger.info(f"📐 鸟瞰图尺寸: {view_params['output_size'][0]}×{view_params['output_size'][1]}")
         bounds = view_params['view_bounds']
-        print(f"📐 世界坐标范围: X({bounds[0]:.1f}~{bounds[2]:.1f}), Y({bounds[1]:.1f}~{bounds[3]:.1f}) cm")
+        logger.info(f"📐 世界坐标范围: X({bounds[0]:.1f}~{bounds[2]:.1f}), Y({bounds[1]:.1f}~{bounds[3]:.1f}) cm")
     
     # 7. 保存结果
     save_start = time.time()
@@ -326,7 +331,7 @@ def inference_single_image(image_path, model_path, device_id=0,
         mask_path = os.path.join(output_dir, f"{base_name}_atlas_mask.jpg")
         cv2.imwrite(mask_path, lane_mask)
         results['mask_path'] = mask_path
-        print(f"💾 分割掩码已保存: {mask_path}")
+        logger.info(f"💾 分割掩码已保存: {mask_path}")
     
     # 保存普通可视化结果
     if save_visualization:
@@ -334,7 +339,7 @@ def inference_single_image(image_path, model_path, device_id=0,
         vis_path = os.path.join(output_dir, f"{base_name}_atlas_result.jpg")
         cv2.imwrite(vis_path, vis_img)
         results['visualization_path'] = vis_path
-        print(f"💾 可视化结果已保存: {vis_path}")
+        logger.info(f"💾 可视化结果已保存: {vis_path}")
     
     # 保存障碍物检测结果
     if enable_obstacle_detection and obstacle_result is not None:
@@ -343,14 +348,14 @@ def inference_single_image(image_path, model_path, device_id=0,
             obstacle_vis_path = os.path.join(output_dir, f"{base_name}_obstacles.jpg")
             cv2.imwrite(obstacle_vis_path, obstacle_vis)
             results['obstacle_vis_path'] = obstacle_vis_path
-            print(f"💾 障碍物可视化已保存: {obstacle_vis_path}")
+            logger.info(f"💾 障碍物可视化已保存: {obstacle_vis_path}")
         
         # 保存障碍物调试可视化
         if obstacle_debug_vis is not None:
             obstacle_debug_path = os.path.join(output_dir, f"{base_name}_obstacle_debug.jpg")
             cv2.imwrite(obstacle_debug_path, obstacle_debug_vis)
             results['obstacle_debug_path'] = obstacle_debug_path
-            print(f"💾 障碍物调试可视化已保存: {obstacle_debug_path}")
+            logger.info(f"💾 障碍物调试可视化已保存: {obstacle_debug_path}")
         
         # 保存障碍物数据
         obstacle_json_path = os.path.join(output_dir, f"{base_name}_obstacle_data.json")
@@ -363,21 +368,21 @@ def inference_single_image(image_path, model_path, device_id=0,
         bird_eye_path = os.path.join(output_dir, f"{base_name}_bird_eye.jpg")
         cv2.imwrite(bird_eye_path, bird_eye_image)
         results['bird_eye_path'] = bird_eye_path
-        print(f"💾 鸟瞰图已保存: {bird_eye_path}")
+        logger.info(f"💾 鸟瞰图已保存: {bird_eye_path}")
         
         # 保存带分割结果的鸟瞰图
         bird_eye_vis = create_visualization(bird_eye_image, bird_eye_mask)
         bird_eye_vis_path = os.path.join(output_dir, f"{base_name}_bird_eye_segmented.jpg")
         cv2.imwrite(bird_eye_vis_path, bird_eye_vis)
         results['bird_eye_vis_path'] = bird_eye_vis_path
-        print(f"💾 鸟瞰图分割可视化已保存: {bird_eye_vis_path}")
+        logger.info(f"💾 鸟瞰图分割可视化已保存: {bird_eye_vis_path}")
     
     # 保存控制地图
     if save_control_map and control_map is not None:
         control_map_path = os.path.join(output_dir, f"{base_name}_control_map.jpg")
         cv2.imwrite(control_map_path, control_map)
         results['control_map_path'] = control_map_path
-        print(f"💾 控制地图已保存: {control_map_path}")
+        logger.info(f"💾 控制地图已保存: {control_map_path}")
         
         # 保存路径数据为JSON
         if path_data is not None:
@@ -387,12 +392,12 @@ def inference_single_image(image_path, model_path, device_id=0,
             path_json_path = os.path.join(output_dir, f"{base_name}_path_data.json")
             save_path_data_json(path_data, path_json_path)
             results['path_json_path'] = path_json_path
-            print(f"💾 路径数据已保存: {path_json_path}")
+            logger.info(f"💾 路径数据已保存: {path_json_path}")
     
     # 7.5. 视觉控制算法（可选）
     control_result = None
     if enable_control and path_data is not None and view_params is not None:
-        print("🚗 启动视觉横向误差控制算法...")
+        logger.info("🚗 启动视觉横向误差控制算法...")
         control_start = time.time()
         
         # 需要导入VisualLateralErrorController类
@@ -420,13 +425,13 @@ def inference_single_image(image_path, model_path, device_id=0,
             control_vis_path = os.path.join(output_dir, f"{base_name}_control_visualization.jpg")
             cv2.imwrite(control_vis_path, control_vis_map)
             results['control_vis_path'] = control_vis_path
-            print(f"💾 控制可视化地图已保存: {control_vis_path}")
+            logger.info(f"💾 控制可视化地图已保存: {control_vis_path}")
         
         # 保存控制数据
         control_json_path = os.path.join(output_dir, f"{base_name}_control_data.json")
         controller.save_control_data(control_result, control_json_path)
         results['control_json_path'] = control_json_path
-        print(f"💾 控制数据已保存: {control_json_path}")
+        logger.info(f"💾 控制数据已保存: {control_json_path}")
         
         # 打印控制分析
         controller.print_control_analysis(control_result)
@@ -458,14 +463,14 @@ def inference_single_image(image_path, model_path, device_id=0,
     total_pixels = lane_mask.shape[0] * lane_mask.shape[1]
     lane_ratio = (lane_pixels / total_pixels) * 100
     
-    print(f"\n📈 检测结果统计:")
-    print(f"🛣️  车道线像素: {lane_pixels:,} / {total_pixels:,} ({lane_ratio:.2f}%)")
+    logger.info(f"\n📈 检测结果统计:")
+    logger.info(f"🛣️  车道线像素: {lane_pixels:,} / {total_pixels:,} ({lane_ratio:.2f}%)")
     
     if bird_eye_mask is not None:
         bird_lane_pixels = np.sum(bird_eye_mask > 0)
         bird_total_pixels = bird_eye_mask.shape[0] * bird_eye_mask.shape[1]
         bird_lane_ratio = (bird_lane_pixels / bird_total_pixels) * 100
-        print(f"🦅 鸟瞰图车道线像素: {bird_lane_pixels:,} / {bird_total_pixels:,} ({bird_lane_ratio:.2f}%)")
+        logger.info(f"🦅 鸟瞰图车道线像素: {bird_lane_pixels:,} / {bird_total_pixels:,} ({bird_lane_ratio:.2f}%)")
     
     results.update({
         'lane_pixels': lane_pixels,

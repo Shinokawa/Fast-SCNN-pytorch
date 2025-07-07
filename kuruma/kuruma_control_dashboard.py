@@ -44,6 +44,7 @@ import queue
 import base64
 import io
 from datetime import datetime
+from core.logging_config import get_module_logger
 
 # Web界面相关导入
 try:
@@ -98,9 +99,16 @@ from control.visual_controller import VisualLateralErrorController
 from interfaces.realtime import setup_logging, realtime_inference
 from interfaces.web_interface import create_web_app, start_web_server, web_data, web_data_lock
 
+# 🔧 修复：统一管理全局车辆控制器
+car_controller = None
+control_thread = None
+control_enabled = False
 
-
-
+# 确保web_interface模块使用同一个car_controller实例
+def sync_car_controller_to_web_interface():
+    """将当前的car_controller同步到web_interface模块"""
+    import interfaces.web_interface as web_interface_module
+    web_interface_module.car_controller = car_controller
 
 # ---------------------------------------------------------------------------------
 # --- 🧠 Atlas NPU推理会话 ---
@@ -130,11 +138,6 @@ from interfaces.web_interface import create_web_app, start_web_server, web_data,
 # ---------------------------------------------------------------------------------
 # --- 🌐 Web界面模块已迁移到interfaces/web_interface.py ---
 # ---------------------------------------------------------------------------------
-
-# 全局车辆控制器
-car_controller = None
-control_thread = None
-control_enabled = False
 
 # WEB_TEMPLATE和Web函数已迁移到interfaces/web_interface.py
 
@@ -213,10 +216,21 @@ def main():
     
     # 状态机和避障参数
     parser.add_argument("--obstacle_detection_interval", type=int, default=10, help="障碍物检测间隔帧数 (默认: 10)")
-    parser.add_argument("--avoidance_left_speed", type=int, default=400, help="避障时左轮速度 (默认: 400)")
-    parser.add_argument("--avoidance_right_speed", type=int, default=700, help="避障时右轮速度 (默认: 700)")
-    parser.add_argument("--avoidance_duration", type=float, default=2.0, help="避障动作持续时间 秒 (默认: 2.0)")
-    parser.add_argument("--reverse_duration", type=float, default=2.0, help="反向动作持续时间 秒 (默认: 2.0)")
+    
+    # 三段避障参数 - 第一段
+    parser.add_argument("--stage1_left_speed", type=int, default=400, help="第一段避障左轮速度 (默认: 400)")
+    parser.add_argument("--stage1_right_speed", type=int, default=700, help="第一段避障右轮速度 (默认: 700)")
+    parser.add_argument("--stage1_duration", type=float, default=1.5, help="第一段避障持续时间 秒 (默认: 1.5)")
+    
+    # 三段避障参数 - 第二段
+    parser.add_argument("--stage2_left_speed", type=int, default=-300, help="第二段避障左轮速度 (默认: -300)")
+    parser.add_argument("--stage2_right_speed", type=int, default=600, help="第二段避障右轮速度 (默认: 600)")
+    parser.add_argument("--stage2_duration", type=float, default=2.0, help="第二段避障持续时间 秒 (默认: 2.0)")
+    
+    # 三段避障参数 - 第三段
+    parser.add_argument("--stage3_left_speed", type=int, default=500, help="第三段避障左轮速度 (默认: 500)")
+    parser.add_argument("--stage3_right_speed", type=int, default=200, help="第三段避障右轮速度 (默认: 200)")
+    parser.add_argument("--stage3_duration", type=float, default=1.5, help="第三段避障持续时间 秒 (默认: 1.5)")
     
     # 交通灯检测参数
     parser.add_argument("--enable_traffic_light_detection", action="store_true", default=True, help="启用交通灯检测")
@@ -300,6 +314,9 @@ def main():
                         car_controller = SimpleCarController(port=args.serial_port)
                         if car_controller.connect():
                             logger.info("✅ 串口连接成功")
+                            # 🔧 修复：同步car_controller到所有模块
+                            sync_car_controller_to_web_interface()
+                            
                             with web_data_lock:
                                 web_data['serial_connected'] = True
                                 if args.auto_start_driving:
@@ -372,10 +389,16 @@ def main():
                 enable_obstacle_detection=args.enable_obstacle_detection,
                 obstacle_config=obstacle_config,
                 obstacle_detection_interval=args.obstacle_detection_interval,
-                avoidance_left_speed=args.avoidance_left_speed,
-                avoidance_right_speed=args.avoidance_right_speed,
-                avoidance_duration=args.avoidance_duration,
-                reverse_duration=args.reverse_duration,
+                # 三段避障参数
+                stage1_left_speed=args.stage1_left_speed,
+                stage1_right_speed=args.stage1_right_speed,
+                stage1_duration=args.stage1_duration,
+                stage2_left_speed=args.stage2_left_speed,
+                stage2_right_speed=args.stage2_right_speed,
+                stage2_duration=args.stage2_duration,
+                stage3_left_speed=args.stage3_left_speed,
+                stage3_right_speed=args.stage3_right_speed,
+                stage3_duration=args.stage3_duration,
                 # 交通灯检测参数
                 enable_traffic_light_detection=enable_traffic_light_detection,
                 traffic_light_detection_interval=args.traffic_light_detection_interval,

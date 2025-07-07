@@ -69,16 +69,21 @@ web_data = {
     'state_time': 0.0,                    # 当前状态持续时间
     'control_source': 'none',             # 控制来源(lane_following/obstacle_avoidance)
     'avoidance_command': None,            # 避障指令
-    'avoidance_config': {                 # 避障配置
-        'left_speed': 400,
-        'right_speed': 700,
-        'duration': 2.0,
-        'reverse_duration': 2.0
+    'avoidance_config': {                 # 三段避障配置
+        'stage1_left_speed': 400,
+        'stage1_right_speed': 700,
+        'stage1_duration': 1.5,
+        'stage2_left_speed': -300,
+        'stage2_right_speed': 600,
+        'stage2_duration': 2.0,
+        'stage3_left_speed': 500,
+        'stage3_right_speed': 200,
+        'stage3_duration': 1.5
     }
 }
 web_data_lock = Lock()
 
-# 全局车辆控制器
+# 🔧 修复：声明为模块级变量，但不初始化，让主文件管理
 car_controller = None
 control_thread = None
 control_enabled = False
@@ -535,6 +540,74 @@ WEB_TEMPLATE = """
             </div>
         </div>
         
+        <div class="param-panel">
+            <h3>🛠️ 三段避障参数实时调整</h3>
+            
+            <h4 style="color: #FF9800; margin: 20px 0 10px 0;">第一段避障</h4>
+            <div class="param-control">
+                <span class="param-label">左轮PWM</span>
+                <input type="range" class="param-slider" id="stage1-left-speed-slider" 
+                       min="-1000" max="1000" step="10" value="400">
+                <span class="param-value" id="stage1-left-speed-value">400</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">右轮PWM</span>
+                <input type="range" class="param-slider" id="stage1-right-speed-slider" 
+                       min="-1000" max="1000" step="10" value="700">
+                <span class="param-value" id="stage1-right-speed-value">700</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">持续时间(s)</span>
+                <input type="range" class="param-slider" id="stage1-duration-slider" 
+                       min="0.1" max="5.0" step="0.1" value="1.5">
+                <span class="param-value" id="stage1-duration-value">1.5</span>
+            </div>
+            
+            <h4 style="color: #FF9800; margin: 20px 0 10px 0;">第二段避障</h4>
+            <div class="param-control">
+                <span class="param-label">左轮PWM</span>
+                <input type="range" class="param-slider" id="stage2-left-speed-slider" 
+                       min="-1000" max="1000" step="10" value="-300">
+                <span class="param-value" id="stage2-left-speed-value">-300</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">右轮PWM</span>
+                <input type="range" class="param-slider" id="stage2-right-speed-slider" 
+                       min="-1000" max="1000" step="10" value="600">
+                <span class="param-value" id="stage2-right-speed-value">600</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">持续时间(s)</span>
+                <input type="range" class="param-slider" id="stage2-duration-slider" 
+                       min="0.1" max="5.0" step="0.1" value="2.0">
+                <span class="param-value" id="stage2-duration-value">2.0</span>
+            </div>
+            
+            <h4 style="color: #FF9800; margin: 20px 0 10px 0;">第三段避障</h4>
+            <div class="param-control">
+                <span class="param-label">左轮PWM</span>
+                <input type="range" class="param-slider" id="stage3-left-speed-slider" 
+                       min="-1000" max="1000" step="10" value="500">
+                <span class="param-value" id="stage3-left-speed-value">500</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">右轮PWM</span>
+                <input type="range" class="param-slider" id="stage3-right-speed-slider" 
+                       min="-1000" max="1000" step="10" value="200">
+                <span class="param-value" id="stage3-right-speed-value">200</span>
+            </div>
+            <div class="param-control">
+                <span class="param-label">持续时间(s)</span>
+                <input type="range" class="param-slider" id="stage3-duration-slider" 
+                       min="0.1" max="5.0" step="0.1" value="1.5">
+                <span class="param-value" id="stage3-duration-value">1.5</span>
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="param-apply" onclick="applyAvoidanceParameters()">应用避障参数</button>
+            </div>
+        </div>
+        
         <div class="image-panel">
             <h3>🗺️ 实时控制地图</h3>
             <img id="control-map" class="control-map" src="/api/control_map" alt="控制地图加载中...">
@@ -924,6 +997,95 @@ WEB_TEMPLATE = """
             });
         }
         
+        // 避障参数滑块更新显示值
+        function updateAvoidanceSliderValues() {
+            // 第一段避障参数
+            const stage1LeftSpeed = document.getElementById('stage1-left-speed-slider');
+            const stage1LeftValue = document.getElementById('stage1-left-speed-value');
+            stage1LeftValue.textContent = stage1LeftSpeed.value;
+            
+            const stage1RightSpeed = document.getElementById('stage1-right-speed-slider');
+            const stage1RightValue = document.getElementById('stage1-right-speed-value');
+            stage1RightValue.textContent = stage1RightSpeed.value;
+            
+            const stage1Duration = document.getElementById('stage1-duration-slider');
+            const stage1DurationValue = document.getElementById('stage1-duration-value');
+            stage1DurationValue.textContent = parseFloat(stage1Duration.value).toFixed(1);
+            
+            // 第二段避障参数
+            const stage2LeftSpeed = document.getElementById('stage2-left-speed-slider');
+            const stage2LeftValue = document.getElementById('stage2-left-speed-value');
+            stage2LeftValue.textContent = stage2LeftSpeed.value;
+            
+            const stage2RightSpeed = document.getElementById('stage2-right-speed-slider');
+            const stage2RightValue = document.getElementById('stage2-right-speed-value');
+            stage2RightValue.textContent = stage2RightSpeed.value;
+            
+            const stage2Duration = document.getElementById('stage2-duration-slider');
+            const stage2DurationValue = document.getElementById('stage2-duration-value');
+            stage2DurationValue.textContent = parseFloat(stage2Duration.value).toFixed(1);
+            
+            // 第三段避障参数
+            const stage3LeftSpeed = document.getElementById('stage3-left-speed-slider');
+            const stage3LeftValue = document.getElementById('stage3-left-speed-value');
+            stage3LeftValue.textContent = stage3LeftSpeed.value;
+            
+            const stage3RightSpeed = document.getElementById('stage3-right-speed-slider');
+            const stage3RightValue = document.getElementById('stage3-right-speed-value');
+            stage3RightValue.textContent = stage3RightSpeed.value;
+            
+            const stage3Duration = document.getElementById('stage3-duration-slider');
+            const stage3DurationValue = document.getElementById('stage3-duration-value');
+            stage3DurationValue.textContent = parseFloat(stage3Duration.value).toFixed(1);
+        }
+        
+        // 应用三段避障参数到系统
+        function applyAvoidanceParameters() {
+            const stage1LeftSpeed = document.getElementById('stage1-left-speed-slider').value;
+            const stage1RightSpeed = document.getElementById('stage1-right-speed-slider').value;
+            const stage1Duration = document.getElementById('stage1-duration-slider').value;
+            
+            const stage2LeftSpeed = document.getElementById('stage2-left-speed-slider').value;
+            const stage2RightSpeed = document.getElementById('stage2-right-speed-slider').value;
+            const stage2Duration = document.getElementById('stage2-duration-slider').value;
+            
+            const stage3LeftSpeed = document.getElementById('stage3-left-speed-slider').value;
+            const stage3RightSpeed = document.getElementById('stage3-right-speed-slider').value;
+            const stage3Duration = document.getElementById('stage3-duration-slider').value;
+            
+            const avoidanceParams = {
+                stage1_left_speed: parseInt(stage1LeftSpeed),
+                stage1_right_speed: parseInt(stage1RightSpeed),
+                stage1_duration: parseFloat(stage1Duration),
+                stage2_left_speed: parseInt(stage2LeftSpeed),
+                stage2_right_speed: parseInt(stage2RightSpeed),
+                stage2_duration: parseFloat(stage2Duration),
+                stage3_left_speed: parseInt(stage3LeftSpeed),
+                stage3_right_speed: parseInt(stage3RightSpeed),
+                stage3_duration: parseFloat(stage3Duration)
+            };
+            
+            fetch('/api/update_avoidance_params', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(avoidanceParams)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLogEntry(`三段避障参数更新成功: 第一段[${stage1LeftSpeed},${stage1RightSpeed},${stage1Duration}s] 第二段[${stage2LeftSpeed},${stage2RightSpeed},${stage2Duration}s] 第三段[${stage3LeftSpeed},${stage3RightSpeed},${stage3Duration}s]`);
+                } else {
+                    addLogEntry(`避障参数更新失败: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                addLogEntry(`避障参数更新错误: ${error}`);
+                console.error('避障参数更新失败:', error);
+            });
+        }
+        
         // 绑定滑块事件
         document.getElementById('steering-gain-slider').addEventListener('input', updateSliderValues);
         document.getElementById('base-speed-slider').addEventListener('input', updateSliderValues);
@@ -931,6 +1093,19 @@ WEB_TEMPLATE = """
         document.getElementById('curvature-damping-slider').addEventListener('input', updateSliderValues);
         document.getElementById('ema-alpha-slider').addEventListener('input', updateSliderValues);
         document.getElementById('enable-smoothing-checkbox').addEventListener('change', updateSliderValues);
+        
+        // 绑定三段避障参数滑块事件
+        document.getElementById('stage1-left-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage1-right-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage1-duration-slider').addEventListener('input', updateAvoidanceSliderValues);
+        
+        document.getElementById('stage2-left-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage2-right-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage2-duration-slider').addEventListener('input', updateAvoidanceSliderValues);
+        
+        document.getElementById('stage3-left-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage3-right-speed-slider').addEventListener('input', updateAvoidanceSliderValues);
+        document.getElementById('stage3-duration-slider').addEventListener('input', updateAvoidanceSliderValues);
         
         // 启动定时更新
         setInterval(updateStats, 1000);  // 每秒更新状态
@@ -940,6 +1115,7 @@ WEB_TEMPLATE = """
         // 初始加载
         updateStats();
         updateSliderValues();
+        updateAvoidanceSliderValues();
         updateControlStatus();
     </script>
 </body>
@@ -1031,6 +1207,66 @@ def create_web_app():
             print(f"❌ 参数更新错误: {e}")
             return jsonify({'success': False, 'error': str(e)})
     
+    @app.route('/api/update_avoidance_params', methods=['POST'])
+    def update_avoidance_params():
+        """更新三段避障参数"""
+        try:
+            params = request.get_json()
+            
+            # 验证参数
+            if not params:
+                return jsonify({'success': False, 'error': '无效的避障参数数据'})
+            
+            updated_params = {}
+            
+            # 更新三段避障参数
+            with web_data_lock:
+                if 'avoidance_config' not in web_data:
+                    web_data['avoidance_config'] = {}
+                
+                # 第一段避障参数
+                if 'stage1_left_speed' in params:
+                    web_data['avoidance_config']['stage1_left_speed'] = int(params['stage1_left_speed'])
+                    updated_params['stage1_left_speed'] = web_data['avoidance_config']['stage1_left_speed']
+                if 'stage1_right_speed' in params:
+                    web_data['avoidance_config']['stage1_right_speed'] = int(params['stage1_right_speed'])
+                    updated_params['stage1_right_speed'] = web_data['avoidance_config']['stage1_right_speed']
+                if 'stage1_duration' in params:
+                    web_data['avoidance_config']['stage1_duration'] = float(params['stage1_duration'])
+                    updated_params['stage1_duration'] = web_data['avoidance_config']['stage1_duration']
+                
+                # 第二段避障参数
+                if 'stage2_left_speed' in params:
+                    web_data['avoidance_config']['stage2_left_speed'] = int(params['stage2_left_speed'])
+                    updated_params['stage2_left_speed'] = web_data['avoidance_config']['stage2_left_speed']
+                if 'stage2_right_speed' in params:
+                    web_data['avoidance_config']['stage2_right_speed'] = int(params['stage2_right_speed'])
+                    updated_params['stage2_right_speed'] = web_data['avoidance_config']['stage2_right_speed']
+                if 'stage2_duration' in params:
+                    web_data['avoidance_config']['stage2_duration'] = float(params['stage2_duration'])
+                    updated_params['stage2_duration'] = web_data['avoidance_config']['stage2_duration']
+                
+                # 第三段避障参数
+                if 'stage3_left_speed' in params:
+                    web_data['avoidance_config']['stage3_left_speed'] = int(params['stage3_left_speed'])
+                    updated_params['stage3_left_speed'] = web_data['avoidance_config']['stage3_left_speed']
+                if 'stage3_right_speed' in params:
+                    web_data['avoidance_config']['stage3_right_speed'] = int(params['stage3_right_speed'])
+                    updated_params['stage3_right_speed'] = web_data['avoidance_config']['stage3_right_speed']
+                if 'stage3_duration' in params:
+                    web_data['avoidance_config']['stage3_duration'] = float(params['stage3_duration'])
+                    updated_params['stage3_duration'] = web_data['avoidance_config']['stage3_duration']
+                
+                # 设置避障参数更新标志
+                web_data['avoidance_params_updated'] = True
+            
+            print(f"🎛️ 三段避障参数更新: {updated_params}")
+            return jsonify({'success': True, 'updated_params': updated_params, 'message': '避障参数更新成功'})
+            
+        except Exception as e:
+            print(f"❌ 避障参数更新错误: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+    
     @app.route('/api/control_map')
     def get_control_map():
         with web_data_lock:
@@ -1104,6 +1340,14 @@ def create_web_app():
         try:
             if not CAR_CONTROLLER_AVAILABLE:
                 return jsonify({'success': False, 'error': '小车控制模块不可用'})
+            
+            # 🔧 修复：如果car_controller已存在且已连接，直接返回成功
+            if car_controller is not None and car_controller.is_connected:
+                with web_data_lock:
+                    web_data['serial_connected'] = True
+                    web_data['serial_enabled'] = True
+                print("✅ 串口已经连接，无需重复连接")
+                return jsonify({'success': True, 'message': '串口已连接'})
             
             # 初始化车辆控制器
             if car_controller is None:

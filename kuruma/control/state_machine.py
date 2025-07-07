@@ -21,8 +21,9 @@ class CarState(Enum):
     """车辆状态枚举"""
     LANE_FOLLOWING = "lane_following"  # 巡线模式
     OBSTACLE_DETECTED = "obstacle_detected"  # 检测到障碍物
-    OBSTACLE_AVOIDANCE = "obstacle_avoidance"  # 避障模式
-    AVOIDANCE_REVERSE = "avoidance_reverse"  # 避障反向状态
+    OBSTACLE_AVOIDANCE_STAGE1 = "obstacle_avoidance_stage1"  # 避障第一段
+    OBSTACLE_AVOIDANCE_STAGE2 = "obstacle_avoidance_stage2"  # 避障第二段
+    OBSTACLE_AVOIDANCE_STAGE3 = "obstacle_avoidance_stage3"  # 避障第三段
     RETURNING_TO_LANE = "returning_to_lane"  # 返回巡线模式
     RED_LIGHT_WAITING = "red_light_waiting"  # 红灯等待状态
 
@@ -32,36 +33,54 @@ class ObstacleAvoidanceStateMachine:
     
     管理车辆在不同状态间的切换：
     - 巡线模式：正常跟随车道线
-    - 避障模式：执行固定的避障动作
+    - 三段避障模式：执行三段不同的避障动作
     - 状态切换和时序控制
     """
     
     def __init__(self, 
-                 avoidance_left_speed=400,
-                 avoidance_right_speed=700,
-                 avoidance_duration=2.0,
-                 reverse_duration=2.0,
+                 # 三段避障参数：每段有左轮PWM、右轮PWM、持续时间
+                 stage1_left_speed=400,
+                 stage1_right_speed=700,
+                 stage1_duration=1.5,
+                 stage2_left_speed=-300,
+                 stage2_right_speed=600,
+                 stage2_duration=2.0,
+                 stage3_left_speed=500,
+                 stage3_right_speed=200,
+                 stage3_duration=1.5,
                  obstacle_detection_interval=10,
                  traffic_light_detection_interval=10):
         """
         初始化状态机
         
         参数:
-            avoidance_left_speed: 避障时左轮速度
-            avoidance_right_speed: 避障时右轮速度
-            avoidance_duration: 避障动作持续时间（秒）
-            reverse_duration: 反向动作持续时间（秒）
+            stage1_left_speed: 第一段左轮速度
+            stage1_right_speed: 第一段右轮速度 
+            stage1_duration: 第一段持续时间（秒）
+            stage2_left_speed: 第二段左轮速度
+            stage2_right_speed: 第二段右轮速度
+            stage2_duration: 第二段持续时间（秒）
+            stage3_left_speed: 第三段左轮速度
+            stage3_right_speed: 第三段右轮速度
+            stage3_duration: 第三段持续时间（秒）
             obstacle_detection_interval: 障碍物检测间隔（帧数）
             traffic_light_detection_interval: 交通灯检测间隔（帧数）
         """
         self.current_state = CarState.LANE_FOLLOWING
         self.previous_state = None
         
-        # 避障参数
-        self.avoidance_left_speed = avoidance_left_speed
-        self.avoidance_right_speed = avoidance_right_speed
-        self.avoidance_duration = avoidance_duration
-        self.reverse_duration = reverse_duration
+        # 三段避障参数
+        self.stage1_left_speed = stage1_left_speed
+        self.stage1_right_speed = stage1_right_speed
+        self.stage1_duration = stage1_duration
+        
+        self.stage2_left_speed = stage2_left_speed
+        self.stage2_right_speed = stage2_right_speed
+        self.stage2_duration = stage2_duration
+        
+        self.stage3_left_speed = stage3_left_speed
+        self.stage3_right_speed = stage3_right_speed
+        self.stage3_duration = stage3_duration
         
         # 障碍物检测参数
         self.obstacle_detection_interval = obstacle_detection_interval
@@ -77,7 +96,7 @@ class ObstacleAvoidanceStateMachine:
         # 🚀 防死循环保护机制
         self.last_avoidance_time = 0  # 上次避障完成的时间
         self.avoidance_cooldown = 5.0  # 避障冷却时间（秒）
-        self.consecutive_avoidance_count = 0  # 连续避障次数
+        self.consecutive_avoidance_count = 0
         self.max_consecutive_avoidances = 3  # 最大连续避障次数
         self.avoidance_reset_time = 10.0  # 避障计数重置时间（秒）
         
@@ -90,17 +109,63 @@ class ObstacleAvoidanceStateMachine:
         
         # 记录初始化配置到日志
         config = {
-            "避障左轮速度": avoidance_left_speed,
-            "避障右轮速度": avoidance_right_speed,
-            "避障持续时间": f"{avoidance_duration}s",
-            "反向持续时间": f"{reverse_duration}s",
+            "第一段": f"左轮{stage1_left_speed}, 右轮{stage1_right_speed}, 时长{stage1_duration}s",
+            "第二段": f"左轮{stage2_left_speed}, 右轮{stage2_right_speed}, 时长{stage2_duration}s", 
+            "第三段": f"左轮{stage3_left_speed}, 右轮{stage3_right_speed}, 时长{stage3_duration}s",
             "障碍物检测间隔": f"{obstacle_detection_interval}帧",
             "交通灯检测间隔": f"{traffic_light_detection_interval}帧",
             "避障冷却时间": f"{self.avoidance_cooldown}s",
             "最大连续避障次数": self.max_consecutive_avoidances,
             "避障计数重置时间": f"{self.avoidance_reset_time}s"
         }
-        log_system_initialization("障碍物避障状态机", config)
+        log_system_initialization("三段避障状态机", config)
+    
+    def update_avoidance_params(self, **kwargs):
+        """
+        动态更新避障参数（用于Web界面实时调整）
+        
+        参数:
+            stage1_left_speed, stage1_right_speed, stage1_duration
+            stage2_left_speed, stage2_right_speed, stage2_duration
+            stage3_left_speed, stage3_right_speed, stage3_duration
+        """
+        updated_params = []
+        
+        # 第一段参数
+        if 'stage1_left_speed' in kwargs:
+            self.stage1_left_speed = kwargs['stage1_left_speed']
+            updated_params.append(f"第一段左轮={self.stage1_left_speed}")
+        if 'stage1_right_speed' in kwargs:
+            self.stage1_right_speed = kwargs['stage1_right_speed']
+            updated_params.append(f"第一段右轮={self.stage1_right_speed}")
+        if 'stage1_duration' in kwargs:
+            self.stage1_duration = kwargs['stage1_duration']
+            updated_params.append(f"第一段时长={self.stage1_duration}s")
+            
+        # 第二段参数
+        if 'stage2_left_speed' in kwargs:
+            self.stage2_left_speed = kwargs['stage2_left_speed']
+            updated_params.append(f"第二段左轮={self.stage2_left_speed}")
+        if 'stage2_right_speed' in kwargs:
+            self.stage2_right_speed = kwargs['stage2_right_speed']
+            updated_params.append(f"第二段右轮={self.stage2_right_speed}")
+        if 'stage2_duration' in kwargs:
+            self.stage2_duration = kwargs['stage2_duration']
+            updated_params.append(f"第二段时长={self.stage2_duration}s")
+            
+        # 第三段参数
+        if 'stage3_left_speed' in kwargs:
+            self.stage3_left_speed = kwargs['stage3_left_speed']
+            updated_params.append(f"第三段左轮={self.stage3_left_speed}")
+        if 'stage3_right_speed' in kwargs:
+            self.stage3_right_speed = kwargs['stage3_right_speed']
+            updated_params.append(f"第三段右轮={self.stage3_right_speed}")
+        if 'stage3_duration' in kwargs:
+            self.stage3_duration = kwargs['stage3_duration']
+            updated_params.append(f"第三段时长={self.stage3_duration}s")
+        
+        if updated_params:
+            self.logger.info(f"🔧 避障参数已更新: {', '.join(updated_params)}")
     
     def set_car_controller(self, car_controller):
         """设置小车控制器"""
@@ -155,7 +220,7 @@ class ObstacleAvoidanceStateMachine:
         """更新避障跟踪信息（记录避障开始）"""
         # 记录避障开始
         self.consecutive_avoidance_count += 1
-        self.logger.info(f"🚧 开始第{self.consecutive_avoidance_count}次避障")
+        self.logger.info(f"🚧 开始第{self.consecutive_avoidance_count}次三段避障")
     
     def _check_and_reset_avoidance_count(self):
         """检查并重置避障计数（如果需要）"""
@@ -171,7 +236,7 @@ class ObstacleAvoidanceStateMachine:
     def complete_avoidance_cycle(self):
         """完成一次避障循环"""
         self.last_avoidance_time = time.time()
-        self.logger.info(f"✅ 避障循环完成，进入{self.avoidance_cooldown}秒冷却期")
+        self.logger.info(f"✅ 三段避障循环完成，进入{self.avoidance_cooldown}秒冷却期")
     
     def _change_state(self, new_state: CarState):
         """内部状态切换方法"""
@@ -251,23 +316,30 @@ class ObstacleAvoidanceStateMachine:
                 }
         
         elif current_state == CarState.OBSTACLE_DETECTED:
-            # 障碍物检测状态：立即进入避障模式
-            self._change_state(CarState.OBSTACLE_AVOIDANCE)
-            self.logger.info("🚗 开始避障动作")
+            # 障碍物检测状态：立即进入第一段避障
+            self._change_state(CarState.OBSTACLE_AVOIDANCE_STAGE1)
+            self.logger.info("🚗 开始第一段避障动作")
             return self._get_control_decision()
             
-        elif current_state == CarState.OBSTACLE_AVOIDANCE:
-            # 避障模式：执行固定避障动作
-            if time_in_state >= self.avoidance_duration:
-                self._change_state(CarState.AVOIDANCE_REVERSE)
-                self.logger.info("🔄 避障完成，开始反向动作")
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE1:
+            # 第一段避障：执行第一段避障动作
+            if time_in_state >= self.stage1_duration:
+                self._change_state(CarState.OBSTACLE_AVOIDANCE_STAGE2)
+                self.logger.info("🔄 第一段避障完成，开始第二段避障动作")
             return self._get_control_decision()
             
-        elif current_state == CarState.AVOIDANCE_REVERSE:
-            # 反向动作：执行反向动作
-            if time_in_state >= self.reverse_duration:
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE2:
+            # 第二段避障：执行第二段避障动作
+            if time_in_state >= self.stage2_duration:
+                self._change_state(CarState.OBSTACLE_AVOIDANCE_STAGE3)
+                self.logger.info("🔄 第二段避障完成，开始第三段避障动作")
+            return self._get_control_decision()
+            
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE3:
+            # 第三段避障：执行第三段避障动作
+            if time_in_state >= self.stage3_duration:
                 self._change_state(CarState.RETURNING_TO_LANE)
-                self.logger.info("🔄 反向动作完成，返回巡线模式")
+                self.logger.info("🔄 第三段避障完成，返回巡线模式")
             return self._get_control_decision()
             
         elif current_state == CarState.RED_LIGHT_WAITING:
@@ -316,25 +388,34 @@ class ObstacleAvoidanceStateMachine:
                 'override_control': True,
                 'left_speed': 0,
                 'right_speed': 0,
-                'message': '检测到障碍物，准备避障'
+                'message': '检测到障碍物，准备三段避障'
             }
             
-        elif current_state == CarState.OBSTACLE_AVOIDANCE:
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE1:
             return {
-                'mode': 'obstacle_avoidance',
+                'mode': 'obstacle_avoidance_stage1',
                 'override_control': True,
-                'left_speed': self.avoidance_left_speed,
-                'right_speed': self.avoidance_right_speed,
-                'message': f'避障模式 - 左轮{self.avoidance_left_speed}, 右轮{self.avoidance_right_speed}'
+                'left_speed': self.stage1_left_speed,
+                'right_speed': self.stage1_right_speed,
+                'message': f'第一段避障 - 左轮{self.stage1_left_speed}, 右轮{self.stage1_right_speed}'
             }
             
-        elif current_state == CarState.AVOIDANCE_REVERSE:
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE2:
             return {
-                'mode': 'avoidance_reverse',
+                'mode': 'obstacle_avoidance_stage2',
                 'override_control': True,
-                'left_speed': -self.avoidance_right_speed,  # 反向：左右轮速度交换并取负
-                'right_speed': -self.avoidance_left_speed,
-                'message': f'反向避障模式 - 左轮{-self.avoidance_right_speed}, 右轮{-self.avoidance_left_speed}'
+                'left_speed': self.stage2_left_speed,
+                'right_speed': self.stage2_right_speed,
+                'message': f'第二段避障 - 左轮{self.stage2_left_speed}, 右轮{self.stage2_right_speed}'
+            }
+            
+        elif current_state == CarState.OBSTACLE_AVOIDANCE_STAGE3:
+            return {
+                'mode': 'obstacle_avoidance_stage3',
+                'override_control': True,
+                'left_speed': self.stage3_left_speed,
+                'right_speed': self.stage3_right_speed,
+                'message': f'第三段避障 - 左轮{self.stage3_left_speed}, 右轮{self.stage3_right_speed}'
             }
             
         elif current_state == CarState.RED_LIGHT_WAITING:
@@ -343,7 +424,7 @@ class ObstacleAvoidanceStateMachine:
                 'override_control': True,
                 'left_speed': 0,
                 'right_speed': 0,
-                'message': '红灯等待中，停车等待'
+                'message': '红灯等待中'
             }
             
         elif current_state == CarState.RETURNING_TO_LANE:
@@ -355,28 +436,14 @@ class ObstacleAvoidanceStateMachine:
                 'message': '返回巡线模式'
             }
         
-        # 默认情况
+        # 默认返回停车状态
         return {
             'mode': 'unknown',
-            'override_control': False,
-            'left_speed': None,
-            'right_speed': None,
-            'message': '未知状态'
+            'override_control': True,
+            'left_speed': 0,
+            'right_speed': 0,
+            'message': '未知状态，停车'
         }
-    
-    def force_stop(self):
-        """强制停止并返回巡线模式"""
-        with self.state_lock:
-            self.logger.info("🛑 强制停止状态机")
-            self._change_state(CarState.LANE_FOLLOWING)
-            
-            # 如果有小车控制器，发送停止指令
-            if self.car_controller and hasattr(self.car_controller, 'stop'):
-                try:
-                    self.car_controller.stop()
-                    self.logger.info("🚗 小车已停止")
-                except Exception as e:
-                    self.logger.error(f"❌ 停止小车时出错: {e}")
     
     def get_state_info(self) -> Dict:
         """获取状态机信息"""
@@ -396,15 +463,52 @@ class ObstacleAvoidanceStateMachine:
             'max_consecutive_avoidances': self.max_consecutive_avoidances,
             'time_since_last_avoidance': time_since_last_avoidance,
             'avoidance_cooldown_remaining': max(0, self.avoidance_cooldown - time_since_last_avoidance),
-            'avoidance_protection_active': not self.is_avoidance_allowed()
+            'avoidance_protection_active': not self.is_avoidance_allowed(),
+            # 三段避障参数信息
+            'avoidance_params': {
+                'stage1': {
+                    'left_speed': self.stage1_left_speed,
+                    'right_speed': self.stage1_right_speed,
+                    'duration': self.stage1_duration
+                },
+                'stage2': {
+                    'left_speed': self.stage2_left_speed,
+                    'right_speed': self.stage2_right_speed,
+                    'duration': self.stage2_duration
+                },
+                'stage3': {
+                    'left_speed': self.stage3_left_speed,
+                    'right_speed': self.stage3_right_speed,
+                    'duration': self.stage3_duration
+                }
+            }
         }
     
     def print_state_info(self):
         """记录状态机信息到日志"""
         info = self.get_state_info()
-        self.logger.info(f"🎯 状态机信息:")
+        self.logger.info(f"🎯 三段避障状态机信息:")
         self.logger.info(f"   当前状态: {info['current_state']}")
         self.logger.info(f"   上一状态: {info['previous_state']}")
         self.logger.info(f"   状态持续时间: {info['time_in_state']:.2f}秒")
         self.logger.info(f"   帧计数: {info['frame_count']}")
-        self.logger.info(f"   下次障碍物检测: {info['next_obstacle_detection_frame']}帧后") 
+        self.logger.info(f"   下次障碍物检测: {info['next_obstacle_detection_frame']}帧后")
+        self.logger.info(f"   下次交通灯检测: {info['next_traffic_light_detection_frame']}帧后")
+        
+        # 🛡️ 防死循环保护信息
+        self.logger.info(f"   连续避障次数: {info['consecutive_avoidance_count']}/{info['max_consecutive_avoidances']}")
+        self.logger.info(f"   距离上次避障: {info['time_since_last_avoidance']:.1f}秒")
+        self.logger.info(f"   避障冷却剩余: {info['avoidance_cooldown_remaining']:.1f}秒")
+        self.logger.info(f"   避障保护激活: {'是' if info['avoidance_protection_active'] else '否'}")
+        
+        # 三段避障参数信息
+        params = info['avoidance_params']
+        self.logger.info(f"   第一段: 左{params['stage1']['left_speed']}, 右{params['stage1']['right_speed']}, {params['stage1']['duration']}s")
+        self.logger.info(f"   第二段: 左{params['stage2']['left_speed']}, 右{params['stage2']['right_speed']}, {params['stage2']['duration']}s")
+        self.logger.info(f"   第三段: 左{params['stage3']['left_speed']}, 右{params['stage3']['right_speed']}, {params['stage3']['duration']}s")
+    
+    def force_stop(self):
+        """强制停止状态机（紧急情况）"""
+        with self.state_lock:
+            self.current_state = CarState.LANE_FOLLOWING
+            self.logger.warning("🛑 状态机已强制停止，回到巡线模式") 

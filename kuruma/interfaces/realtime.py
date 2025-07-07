@@ -52,9 +52,12 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       edge_computing=False, pixels_per_unit=20, margin_ratio=0.1,
                       ema_alpha=0.5, enable_smoothing=True,
                       enable_obstacle_detection=True, obstacle_config=None,
-                      obstacle_detection_interval=10, avoidance_left_speed=400,
-                      avoidance_right_speed=700, avoidance_duration=2.0,
-                      reverse_duration=2.0, enable_traffic_light_detection=True,
+                      obstacle_detection_interval=10, 
+                      # 三段避障参数
+                      stage1_left_speed=400, stage1_right_speed=700, stage1_duration=1.5,
+                      stage2_left_speed=-300, stage2_right_speed=600, stage2_duration=2.0,
+                      stage3_left_speed=500, stage3_right_speed=200, stage3_duration=1.5,
+                      enable_traffic_light_detection=True,
                       traffic_light_detection_interval=10, web_data=None, web_data_lock=None):
     """
     实时摄像头推理模式
@@ -72,18 +75,22 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         enable_obstacle_detection: 是否启用障碍物检测
         obstacle_config: 障碍物检测配置字典
         obstacle_detection_interval: 障碍物检测间隔（帧数）
-        avoidance_left_speed: 避障时左轮速度
-        avoidance_right_speed: 避障时右轮速度
-        avoidance_duration: 避障动作持续时间（秒）
-        reverse_duration: 反向动作持续时间（秒）
+        # 三段避障参数
+        stage1_left_speed: 第一段避障左轮速度
+        stage1_right_speed: 第一段避障右轮速度
+        stage1_duration: 第一段避障持续时间（秒）
+        stage2_left_speed: 第二段避障左轮速度
+        stage2_right_speed: 第二段避障右轮速度
+        stage2_duration: 第二段避障持续时间（秒）
+        stage3_left_speed: 第三段避障左轮速度
+        stage3_right_speed: 第三段避障右轮速度
+        stage3_duration: 第三段避障持续时间（秒）
         enable_traffic_light_detection: 是否启用交通灯检测
         traffic_light_detection_interval: 交通灯检测间隔（帧数）
         其他: 控制参数
     """
-    # 由于需要访问Web界面数据，这些需要从外部传入或重新组织
-    # 使用传入的web_data和web_data_lock，或创建本地变量
-    global car_controller
-    car_controller = None
+    # 🔧 修复：导入web_interface模块的全局car_controller，而不是重新创建
+    from interfaces.web_interface import car_controller
     
     # 使用传入的web_data参数，如果为None则创建本地变量
     if web_data is None or web_data_lock is None:
@@ -105,7 +112,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
     
     # 配置日志
     setup_logging(log_file)
-    logger = logging.getLogger(__name__)
+    logger = get_module_logger(__name__)
     
     logger.info("🚀 启动实时推理系统")
     logger.info(f"📱 模型: {model_path}")
@@ -161,20 +168,24 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
     
     # 初始化状态机
     state_machine = ObstacleAvoidanceStateMachine(
-        avoidance_left_speed=avoidance_left_speed,
-        avoidance_right_speed=avoidance_right_speed,
-        avoidance_duration=avoidance_duration,
-        reverse_duration=reverse_duration,
+        stage1_left_speed=stage1_left_speed,
+        stage1_right_speed=stage1_right_speed,
+        stage1_duration=stage1_duration,
+        stage2_left_speed=stage2_left_speed,
+        stage2_right_speed=stage2_right_speed,
+        stage2_duration=stage2_duration,
+        stage3_left_speed=stage3_left_speed,
+        stage3_right_speed=stage3_right_speed,
+        stage3_duration=stage3_duration,
         obstacle_detection_interval=obstacle_detection_interval,
         traffic_light_detection_interval=traffic_light_detection_interval
     )
     
     # 记录状态机配置到日志
-    log_system_initialization("状态机", {
-        "避障左轮速度": avoidance_left_speed,
-        "避障右轮速度": avoidance_right_speed,
-        "避障持续时间": f"{avoidance_duration}s",
-        "反向持续时间": f"{reverse_duration}s",
+    log_system_initialization("三段避障状态机", {
+        "第一段": f"左轮{stage1_left_speed}, 右轮{stage1_right_speed}, 时长{stage1_duration}s",
+        "第二段": f"左轮{stage2_left_speed}, 右轮{stage2_right_speed}, 时长{stage2_duration}s",
+        "第三段": f"左轮{stage3_left_speed}, 右轮{stage3_right_speed}, 时长{stage3_duration}s",
         "障碍物检测间隔": f"{obstacle_detection_interval}帧"
     })
     
@@ -368,6 +379,18 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         print(f"🎛️ 控制参数已更新: 转向增益={controller.steering_gain}, "
                               f"基础PWM={controller.base_pwm}, 预瞄距离={controller.preview_distance}cm, "
                               f"阻尼系数={controller.curvature_damping}, EMA平滑={'启用' if controller.enable_smoothing else '禁用'}(α={controller.ema_alpha})")
+                    
+                    # 检查避障参数更新
+                    if web_data.get('avoidance_params_updated', False):
+                        # 应用新的避障参数到状态机
+                        avoidance_config = web_data.get('avoidance_config', {})
+                        
+                        # 动态更新状态机的避障参数
+                        if state_machine:
+                            state_machine.update_avoidance_params(**avoidance_config)
+                        
+                        web_data['avoidance_params_updated'] = False  # 重置标志
+                        print(f"🎛️ 避障参数已实时更新到状态机")
             
             # 5. 控制计算 - 根据状态机决策
             control_time = 0
@@ -589,7 +612,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                     
                     # 检查是否正在避障
                     current_state = state_machine.get_current_state().value
-                    web_data['avoidance_active'] = current_state in ['obstacle_avoidance', 'reversing', 'emergency_stop']
+                    web_data['avoidance_active'] = current_state in ['obstacle_avoidance_stage1', 'obstacle_avoidance_stage2', 'obstacle_avoidance_stage3', 'emergency_stop']
                     
                     web_data['latest_stats'] = {
                         'latency': pipeline_latency,

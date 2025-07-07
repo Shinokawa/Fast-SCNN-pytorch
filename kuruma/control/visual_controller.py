@@ -11,6 +11,8 @@ import numpy as np
 import cv2
 import time
 import json
+import logging
+from core.logging_config import get_module_logger
 
 # 导入标定模块
 from core.calibration import get_corrected_calibration
@@ -18,6 +20,8 @@ from core.calibration import get_corrected_calibration
 # ---------------------------------------------------------------------------------
 # --- 🚗 基于视觉横向误差的比例-速度自适应差速控制算法 ---
 # ---------------------------------------------------------------------------------
+
+logger = get_module_logger(__name__)
 
 class VisualLateralErrorController:
     """
@@ -61,13 +65,13 @@ class VisualLateralErrorController:
         # 性能统计
         self.control_history = []
         
-        print(f"🚗 视觉横向误差控制器已初始化:")
-        print(f"   📐 转向增益: {steering_gain}")
-        print(f"   🏃 基础PWM: {base_pwm} (-1000~+1000)")
-        print(f"   🌊 曲率阻尼: {curvature_damping}")
-        print(f"   👁️ 预瞄距离: {preview_distance} cm")
-        print(f"   ⚡ PWM范围: {min_pwm} ~ {max_pwm} (支持双向旋转)")
-        print(f"   🔄 EMA平滑: {'启用' if enable_smoothing else '禁用'} (α={ema_alpha}) - 优化版本：输入信号平滑")
+        logger.info(f"🚗 视觉横向误差控制器已初始化:")
+        logger.info(f"   📐 转向增益: {steering_gain}")
+        logger.info(f"   🏃 基础PWM: {base_pwm} (-1000~+1000)")
+        logger.info(f"   🌊 曲率阻尼: {curvature_damping}")
+        logger.info(f"   👁️ 预瞄距离: {preview_distance} cm")
+        logger.info(f"   ⚡ PWM范围: {min_pwm} ~ {max_pwm} (支持双向旋转)")
+        logger.info(f"   🔄 EMA平滑: {'启用' if enable_smoothing else '禁用'} (α={ema_alpha}) - 优化版本：输入信号平滑")
     
     def calculate_lateral_error(self, path_data, view_params):
         """
@@ -212,7 +216,7 @@ class VisualLateralErrorController:
         优化版本：只重置横向误差的EMA状态
         """
         self.ema_lateral_error = None
-        print("🔄 EMA平滑状态已重置（优化版本：仅重置lateral_error平滑器）")
+        logger.info("🔄 EMA平滑状态已重置（优化版本：仅重置lateral_error平滑器）")
     
     def update_smoothing_params(self, ema_alpha=None, enable_smoothing=None):
         """
@@ -224,14 +228,14 @@ class VisualLateralErrorController:
         """
         if ema_alpha is not None:
             self.ema_alpha = max(0.1, min(1.0, ema_alpha))  # 限制在0.1-1.0范围
-            print(f"🔄 EMA平滑系数已更新: α={self.ema_alpha}")
+            logger.info(f"🔄 EMA平滑系数已更新: α={self.ema_alpha}")
         
         if enable_smoothing is not None:
             old_state = self.enable_smoothing
             self.enable_smoothing = enable_smoothing
             if not enable_smoothing and old_state:
                 self.reset_ema_state()  # 禁用平滑时重置状态
-            print(f"🔄 EMA平滑{'启用' if enable_smoothing else '禁用'}（优化版本：输入信号平滑）")
+            logger.info(f"🔄 EMA平滑{'启用' if enable_smoothing else '禁用'}（优化版本：输入信号平滑）")
 
     def _get_car_position_world(self, view_params):
         """
@@ -262,7 +266,7 @@ class VisualLateralErrorController:
             return (world_x, world_y)
             
         except Exception as e:
-            print(f"⚠️ 无法获取机器人世界坐标: {e}")
+            logger.warning(f"⚠️ 无法获取机器人世界坐标: {e}")
             # 使用视图边界的底部中心作为回退
             min_x, min_y, max_x, max_y = view_params['view_bounds']
             return ((min_x + max_x) / 2, max_y)
@@ -385,65 +389,65 @@ class VisualLateralErrorController:
     
     def print_control_analysis(self, control_result):
         """打印详细的控制分析结果"""
-        print("\n" + "="*60)
-        print("🚗 基于视觉横向误差的差速控制分析")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("🚗 基于视觉横向误差的差速控制分析")
+        logger.info("="*60)
         
         # 基础信息
-        print(f"📍 机器人位置: ({control_result['car_position'][0]:.1f}, {control_result['car_position'][1]:.1f}) cm")
+        logger.info(f"📍 机器人位置: ({control_result['car_position'][0]:.1f}, {control_result['car_position'][1]:.1f}) cm")
         if control_result['control_point']:
-            print(f"🎯 控制点位置: ({control_result['control_point'][0]:.1f}, {control_result['control_point'][1]:.1f}) cm")
+            logger.info(f"🎯 控制点位置: ({control_result['control_point'][0]:.1f}, {control_result['control_point'][1]:.1f}) cm")
         
         # 模块一：视觉误差感知
-        print(f"\n📱 模块一：视觉误差感知")
-        print(f"   横向误差: {control_result['lateral_error']:+.1f} cm")
-        print(f"   转向方向: {control_result['turn_direction'].upper()}")
-        print(f"   误差强度: {'高' if abs(control_result['lateral_error']) > 10 else '中' if abs(control_result['lateral_error']) > 5 else '低'}")
+        logger.info(f"\n📱 模块一：视觉误差感知")
+        logger.info(f"   横向误差: {control_result['lateral_error']:+.1f} cm")
+        logger.info(f"   转向方向: {control_result['turn_direction'].upper()}")
+        logger.info(f"   误差强度: {'高' if abs(control_result['lateral_error']) > 10 else '中' if abs(control_result['lateral_error']) > 5 else '低'}")
         
         # 模块二：比例转向控制
-        print(f"\n🎮 模块二：比例转向控制")
-        print(f"   转向调整: {control_result['steering_adjustment']:+.0f} PWM")
-        print(f"   控制增益: {self.steering_gain}")
+        logger.info(f"\n🎮 模块二：比例转向控制")
+        logger.info(f"   转向调整: {control_result['steering_adjustment']:+.0f} PWM")
+        logger.info(f"   控制增益: {self.steering_gain}")
         
         # 模块三：动态PWM自适应
-        print(f"\n⚡ 模块三：动态PWM自适应")
-        print(f"   基础PWM: {self.base_pwm:.0f}")
-        print(f"   动态PWM: {control_result['dynamic_pwm']:.0f}")
-        print(f"   PWM衰减: {control_result['pwm_reduction_factor']:.2f}x")
-        print(f"   曲率水平: {control_result['curvature_level']:.3f}")
+        logger.info(f"\n⚡ 模块三：动态PWM自适应")
+        logger.info(f"   基础PWM: {self.base_pwm:.0f}")
+        logger.info(f"   动态PWM: {control_result['dynamic_pwm']:.0f}")
+        logger.info(f"   PWM衰减: {control_result['pwm_reduction_factor']:.2f}x")
+        logger.info(f"   曲率水平: {control_result['curvature_level']:.3f}")
         
         # 最终控制指令
-        print(f"\n🛞 最终差速PWM控制指令")
-        print(f"   左轮PWM: {control_result['pwm_left']:+.0f}")
-        print(f"   右轮PWM: {control_result['pwm_right']:+.0f}")
-        print(f"   PWM差值: {abs(control_result['pwm_right'] - control_result['pwm_left']):.0f}")
-        print(f"   可直接发送给底层驱动！")
+        logger.info(f"\n🛞 最终差速PWM控制指令")
+        logger.info(f"   左轮PWM: {control_result['pwm_left']:+.0f}")
+        logger.info(f"   右轮PWM: {control_result['pwm_right']:+.0f}")
+        logger.info(f"   PWM差值: {abs(control_result['pwm_right'] - control_result['pwm_left']):.0f}")
+        logger.info(f"   可直接发送给底层驱动！")
         
         # 性能建议
         self._print_performance_recommendations(control_result)
     
     def _print_performance_recommendations(self, control_result):
         """打印性能建议"""
-        print(f"\n💡 性能分析与建议")
+        logger.info(f"\n💡 性能分析与建议")
         
         error_abs = abs(control_result['lateral_error'])
         if error_abs > 15:
-            print("   ⚠️ 横向误差较大，建议检查路径规划质量")
+            logger.warning("   ⚠️ 横向误差较大，建议检查路径规划质量")
         elif error_abs < 2:
-            print("   ✅ 横向误差很小，路径跟踪良好")
+            logger.info("   ✅ 横向误差很小，路径跟踪良好")
         else:
-            print("   👍 横向误差在合理范围内")
+            logger.info("   👍 横向误差在合理范围内")
         
         if control_result['curvature_level'] > 0.3:
-            print("   🌊 进入高曲率路段，自动减速生效")
+            logger.warning("   🌊 进入高曲率路段，自动减速生效")
         elif control_result['curvature_level'] < 0.1:
-            print("   🛣️ 直线路段，保持较高速度")
+            logger.info("   🛣️ 直线路段，保持较高速度")
         
         speed_diff = abs(control_result['speed_right'] - control_result['speed_left'])
         if speed_diff > 10:
-            print("   🔄 大幅转向指令，注意机器人稳定性")
+            logger.warning("   🔄 大幅转向指令，注意机器人稳定性")
         elif speed_diff < 2:
-            print("   ➡️ 直行为主，转向调整轻微")
+            logger.info("   ➡️ 直行为主，转向调整轻微")
 
     def save_control_data(self, control_result, json_path):
         """
