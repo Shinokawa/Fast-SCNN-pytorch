@@ -218,6 +218,11 @@ def main():
     parser.add_argument("--avoidance_duration", type=float, default=2.0, help="避障动作持续时间 秒 (默认: 2.0)")
     parser.add_argument("--reverse_duration", type=float, default=2.0, help="反向动作持续时间 秒 (默认: 2.0)")
     
+    # 交通灯检测参数
+    parser.add_argument("--enable_traffic_light_detection", action="store_true", default=True, help="启用交通灯检测")
+    parser.add_argument("--disable_traffic_light_detection", action="store_true", help="禁用交通灯检测")
+    parser.add_argument("--traffic_light_detection_interval", type=int, default=10, help="交通灯检测间隔帧数 (默认: 10)")
+    
     # EMA时间平滑参数
     parser.add_argument("--ema_alpha", type=float, default=0.5, help="EMA平滑系数 (0.1-1.0, 默认: 0.5)")
     parser.add_argument("--enable_smoothing", action="store_true", default=True, help="启用控制指令EMA平滑 (默认: 启用)")
@@ -338,6 +343,9 @@ def main():
                 # 记录障碍物检测配置
                 log_system_initialization("障碍物检测", obstacle_config)
             
+            # 处理交通灯检测参数
+            enable_traffic_light_detection = args.enable_traffic_light_detection and not args.disable_traffic_light_detection
+            
             realtime_inference(
                 model_path=args.model,
                 device_id=args.device_id,
@@ -368,6 +376,9 @@ def main():
                 avoidance_right_speed=args.avoidance_right_speed,
                 avoidance_duration=args.avoidance_duration,
                 reverse_duration=args.reverse_duration,
+                # 交通灯检测参数
+                enable_traffic_light_detection=enable_traffic_light_detection,
+                traffic_light_detection_interval=args.traffic_light_detection_interval,
                 # 传递Web数据
                 web_data=web_data,
                 web_data_lock=web_data_lock
@@ -413,6 +424,9 @@ def main():
             
             # 记录障碍物检测配置
             log_system_initialization("障碍物检测", obstacle_config)
+        
+        # 处理交通灯检测参数
+        enable_traffic_light_detection = args.enable_traffic_light_detection and not args.disable_traffic_light_detection
         
         results = inference_single_image(
             image_path=args.input,

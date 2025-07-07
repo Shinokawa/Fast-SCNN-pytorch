@@ -54,7 +54,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                       enable_obstacle_detection=True, obstacle_config=None,
                       obstacle_detection_interval=10, avoidance_left_speed=400,
                       avoidance_right_speed=700, avoidance_duration=2.0,
-                      reverse_duration=2.0, web_data=None, web_data_lock=None):
+                      reverse_duration=2.0, enable_traffic_light_detection=True,
+                      traffic_light_detection_interval=10, web_data=None, web_data_lock=None):
     """
     实时摄像头推理模式
     
@@ -75,6 +76,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         avoidance_right_speed: 避障时右轮速度
         avoidance_duration: 避障动作持续时间（秒）
         reverse_duration: 反向动作持续时间（秒）
+        enable_traffic_light_detection: 是否启用交通灯检测
+        traffic_light_detection_interval: 交通灯检测间隔（帧数）
         其他: 控制参数
     """
     # 由于需要访问Web界面数据，这些需要从外部传入或重新组织
@@ -162,7 +165,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         avoidance_right_speed=avoidance_right_speed,
         avoidance_duration=avoidance_duration,
         reverse_duration=reverse_duration,
-        obstacle_detection_interval=obstacle_detection_interval
+        obstacle_detection_interval=obstacle_detection_interval,
+        traffic_light_detection_interval=traffic_light_detection_interval
     )
     
     # 记录状态机配置到日志
@@ -189,6 +193,19 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
         logger.info("🚧 障碍物检测器初始化完成")
     else:
         logger.info("⚠️ 障碍物检测已禁用")
+    
+    # 初始化交通灯检测器
+    traffic_light_detector = None
+    if enable_traffic_light_detection:
+        from vision.traffic_light_detection import create_traffic_light_detector
+        traffic_light_detector = create_traffic_light_detector(device_id=device_id)
+        if traffic_light_detector is not None:
+            logger.info("🚦 交通灯检测器初始化完成")
+        else:
+            logger.warning("⚠️ 交通灯检测器初始化失败，功能已禁用")
+            enable_traffic_light_detection = False
+    else:
+        logger.info("⚠️ 交通灯检测已禁用")
     
     # 初始化Web界面数据
     if enable_web:
@@ -295,8 +312,39 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 
                 obstacle_detection_time = (time.time() - obstacle_start) * 1000
             
+            # 4.6. 交通灯检测（可选，按间隔执行）
+            traffic_light_detection_time = 0
+            traffic_light_result = None
+            traffic_light_detected = False
+            traffic_light_status = "unknown"
+            
+            if enable_traffic_light_detection and traffic_light_detector and state_machine.is_traffic_light_detection_frame():
+                traffic_light_start = time.time()
+                
+                # 执行交通灯检测
+                traffic_light_result = traffic_light_detector.detect_traffic_light(frame)
+                
+                if traffic_light_result['detected']:
+                    traffic_light_detected = True
+                    traffic_light_status = traffic_light_result['status']
+                    confidence = traffic_light_result['confidence']
+                    logger.info(f"🚦 第{frame_count}帧检测到交通灯: {traffic_light_status.upper()}, 置信度{confidence:.2f}")
+                    
+                    # 记录详细检测信息
+                    for i, det in enumerate(traffic_light_result['detections']):
+                        logger.info(f"   检测{i+1}: {det['class_name']}, 置信度{det['confidence']:.2f}")
+                else:
+                    logger.info(f"🔍 第{frame_count}帧未检测到交通灯")
+                
+                traffic_light_detection_time = (time.time() - traffic_light_start) * 1000
+            
             # 处理状态机逻辑
-            control_decision = state_machine.process_frame(obstacle_detected, obstacle_result)
+            control_decision = state_machine.process_frame(
+                obstacle_detected=obstacle_detected, 
+                obstacle_result=obstacle_result,
+                traffic_light_detected=traffic_light_detected,
+                traffic_light_status=traffic_light_status
+            )
             
             # 检查Web界面参数更新
             if enable_web and enable_control and controller:
@@ -431,6 +479,11 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 total_times["obstacle_detection"] = 0
             total_times["obstacle_detection"] += int(obstacle_detection_time)
             
+            # 添加交通灯检测时间统计
+            if "traffic_light_detection" not in total_times:
+                total_times["traffic_light_detection"] = 0
+            total_times["traffic_light_detection"] += int(traffic_light_detection_time)
+            
             pipeline_latency = (time.time() - loop_start) * 1000
             
             # 每20帧输出一次详细统计
@@ -444,6 +497,7 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 avg_transform = total_times["transform"] / frame_count
                 avg_control = total_times["control"] / frame_count
                 avg_obstacle_detection = total_times["obstacle_detection"] / frame_count
+                avg_traffic_light_detection = total_times["traffic_light_detection"] / frame_count
                 avg_total = sum(total_times.values()) / frame_count
                 
                 logger.info(f"📊 第{frame_count}帧性能分析:")
@@ -453,6 +507,8 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                 logger.info(f"   透视变换: {transform_time:.1f}ms (平均: {avg_transform:.1f}ms)")
                 if enable_obstacle_detection:
                     logger.info(f"   障碍物检测: {obstacle_detection_time:.1f}ms (平均: {avg_obstacle_detection:.1f}ms)")
+                if enable_traffic_light_detection:
+                    logger.info(f"   交通灯检测: {traffic_light_detection_time:.1f}ms (平均: {avg_traffic_light_detection:.1f}ms)")
                 if enable_control:
                     logger.info(f"   控制计算: {control_time:.1f}ms (平均: {avg_control:.1f}ms)")
                 logger.info(f"   总延迟: {pipeline_latency:.1f}ms (平均: {avg_total:.1f}ms)")
@@ -504,6 +560,22 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                     web_data['obstacle_detection_enabled'] = enable_obstacle_detection
                     web_data['obstacle_detected'] = obstacle_detected
                     web_data['obstacle_count'] = obstacle_result['num_obstacles'] if obstacle_result else 0
+                    
+                    # 更新交通灯检测相关状态
+                    web_data['traffic_light_detection_enabled'] = enable_traffic_light_detection
+                    web_data['traffic_light_detected'] = traffic_light_detected
+                    web_data['traffic_light_status'] = traffic_light_status
+                    web_data['traffic_light_confidence'] = traffic_light_result.get('confidence', 0.0) if traffic_light_result else 0.0
+                    
+                    # 计算交通灯检测倒计时
+                    if enable_traffic_light_detection:
+                        traffic_light_countdown = traffic_light_detection_interval - (frame_count % traffic_light_detection_interval)
+                        if traffic_light_countdown == traffic_light_detection_interval:
+                            traffic_light_countdown = 0
+                        web_data['traffic_light_countdown'] = traffic_light_countdown
+                    else:
+                        web_data['traffic_light_countdown'] = 0
+                    
                     web_data['state_machine_state'] = state_machine.get_current_state().value
                     
                     # 获取完整的状态机信息（包含防死循环保护状态）
@@ -536,6 +608,10 @@ def realtime_inference(model_path, device_id=0, camera_index=0,
                         'control_source': control_result.get('control_source', 'none') if control_result else 'none',
                         'obstacle_detected': obstacle_detected,
                         'obstacle_count': obstacle_result['num_obstacles'] if obstacle_result else 0,
+                        'traffic_light_detected': traffic_light_detected,
+                        'traffic_light_status': traffic_light_status,
+                        'traffic_light_confidence': traffic_light_result.get('confidence', 0.0) if traffic_light_result else 0.0,
+                        'traffic_light_countdown': web_data.get('traffic_light_countdown', 0),
                         'state_time': state_info['time_in_state'],
                         # 🛡️ 防死循环保护状态
                         'consecutive_avoidance_count': state_info['consecutive_avoidance_count'],

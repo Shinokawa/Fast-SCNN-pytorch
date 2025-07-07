@@ -24,6 +24,7 @@ class CarState(Enum):
     OBSTACLE_AVOIDANCE = "obstacle_avoidance"  # 避障模式
     AVOIDANCE_REVERSE = "avoidance_reverse"  # 避障反向状态
     RETURNING_TO_LANE = "returning_to_lane"  # 返回巡线模式
+    RED_LIGHT_WAITING = "red_light_waiting"  # 红灯等待状态
 
 class ObstacleAvoidanceStateMachine:
     """
@@ -40,7 +41,8 @@ class ObstacleAvoidanceStateMachine:
                  avoidance_right_speed=700,
                  avoidance_duration=2.0,
                  reverse_duration=2.0,
-                 obstacle_detection_interval=10):
+                 obstacle_detection_interval=10,
+                 traffic_light_detection_interval=10):
         """
         初始化状态机
         
@@ -50,6 +52,7 @@ class ObstacleAvoidanceStateMachine:
             avoidance_duration: 避障动作持续时间（秒）
             reverse_duration: 反向动作持续时间（秒）
             obstacle_detection_interval: 障碍物检测间隔（帧数）
+            traffic_light_detection_interval: 交通灯检测间隔（帧数）
         """
         self.current_state = CarState.LANE_FOLLOWING
         self.previous_state = None
@@ -63,6 +66,9 @@ class ObstacleAvoidanceStateMachine:
         # 障碍物检测参数
         self.obstacle_detection_interval = obstacle_detection_interval
         self.frame_count = 0
+        
+        # 交通灯检测参数
+        self.traffic_light_detection_interval = traffic_light_detection_interval
         
         # 状态机计时器
         self.state_start_time = time.time()
@@ -89,6 +95,7 @@ class ObstacleAvoidanceStateMachine:
             "避障持续时间": f"{avoidance_duration}s",
             "反向持续时间": f"{reverse_duration}s",
             "障碍物检测间隔": f"{obstacle_detection_interval}帧",
+            "交通灯检测间隔": f"{traffic_light_detection_interval}帧",
             "避障冷却时间": f"{self.avoidance_cooldown}s",
             "最大连续避障次数": self.max_consecutive_avoidances,
             "避障计数重置时间": f"{self.avoidance_reset_time}s"
@@ -113,6 +120,10 @@ class ObstacleAvoidanceStateMachine:
     def is_obstacle_detection_frame(self) -> bool:
         """检查是否为障碍物检测帧"""
         return self.frame_count % self.obstacle_detection_interval == 0
+    
+    def is_traffic_light_detection_frame(self) -> bool:
+        """检查是否为交通灯检测帧"""
+        return self.frame_count % self.traffic_light_detection_interval == 0
     
     def update_frame_count(self):
         """更新帧计数"""
@@ -176,13 +187,16 @@ class ObstacleAvoidanceStateMachine:
                 if self.on_state_change:
                     self.on_state_change(self.previous_state, new_state)
     
-    def process_frame(self, obstacle_detected: bool = False, obstacle_result: Optional[Dict] = None) -> Dict:
+    def process_frame(self, obstacle_detected: bool = False, obstacle_result: Optional[Dict] = None, 
+                     traffic_light_detected: bool = False, traffic_light_status: str = "unknown") -> Dict:
         """
         处理每一帧的状态逻辑
         
         参数:
             obstacle_detected: 是否检测到障碍物
             obstacle_result: 障碍物检测结果
+            traffic_light_detected: 是否检测到交通灯
+            traffic_light_status: 交通灯状态 ("red", "green", "unknown")
             
         返回:
             control_decision: 控制决策字典
@@ -194,8 +208,17 @@ class ObstacleAvoidanceStateMachine:
         
         # 状态机主要逻辑
         if current_state == CarState.LANE_FOLLOWING:
-            # 巡线模式：检查是否有障碍物
-            if obstacle_detected and self.is_obstacle_detection_frame():
+            # 巡线模式：优先检查红灯，然后检查障碍物
+            
+            # 🚦 检查红灯（优先级最高）
+            if (traffic_light_detected and traffic_light_status == "red" and 
+                self.is_traffic_light_detection_frame()):
+                self.logger.info("🚦 检测到红灯，进入等待状态")
+                self._change_state(CarState.RED_LIGHT_WAITING)
+                return self._get_control_decision()
+            
+            # 🚧 检查障碍物
+            elif obstacle_detected and self.is_obstacle_detection_frame():
                 num_obstacles = obstacle_result['num_obstacles'] if obstacle_result else 0
                 self.logger.info(f"🚧 检测到障碍物: {num_obstacles}个")
                 
@@ -247,6 +270,17 @@ class ObstacleAvoidanceStateMachine:
                 self.logger.info("🔄 反向动作完成，返回巡线模式")
             return self._get_control_decision()
             
+        elif current_state == CarState.RED_LIGHT_WAITING:
+            # 红灯等待状态：检查是否转绿灯
+            if (traffic_light_detected and traffic_light_status == "green" and 
+                self.is_traffic_light_detection_frame()):
+                self.logger.info("🚦 检测到绿灯，返回巡线模式")
+                self._change_state(CarState.LANE_FOLLOWING)
+                return self._get_control_decision()
+            else:
+                # 继续等待红灯，保持停车状态
+                return self._get_control_decision()
+                
         elif current_state == CarState.RETURNING_TO_LANE:
             # 返回巡线：立即切换到巡线模式
             self.complete_avoidance_cycle()  # 🛡️ 标记避障循环完成
@@ -303,6 +337,15 @@ class ObstacleAvoidanceStateMachine:
                 'message': f'反向避障模式 - 左轮{-self.avoidance_right_speed}, 右轮{-self.avoidance_left_speed}'
             }
             
+        elif current_state == CarState.RED_LIGHT_WAITING:
+            return {
+                'mode': 'red_light_waiting',
+                'override_control': True,
+                'left_speed': 0,
+                'right_speed': 0,
+                'message': '红灯等待中，停车等待'
+            }
+            
         elif current_state == CarState.RETURNING_TO_LANE:
             return {
                 'mode': 'returning_to_lane',
@@ -347,6 +390,7 @@ class ObstacleAvoidanceStateMachine:
             'time_in_state': time_in_state,
             'frame_count': self.frame_count,
             'next_obstacle_detection_frame': self.obstacle_detection_interval - (self.frame_count % self.obstacle_detection_interval),
+            'next_traffic_light_detection_frame': self.traffic_light_detection_interval - (self.frame_count % self.traffic_light_detection_interval),
             # 🛡️ 防死循环保护状态
             'consecutive_avoidance_count': self.consecutive_avoidance_count,
             'max_consecutive_avoidances': self.max_consecutive_avoidances,

@@ -14,8 +14,8 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-# 导入AIS-Bench接口
-from ais_bench.infer.interface import InferSession
+# 导入Atlas会话管理器
+from core.atlas_session_manager import get_atlas_session, create_tensor
 
 # 导入其他核心模块
 from core.calibration import get_corrected_calibration, get_builtin_calibration
@@ -26,41 +26,66 @@ from core.preprocessing import preprocess_matched_resolution, postprocess_matche
 # ---------------------------------------------------------------------------------
 
 class AtlasInferSession:
-    """Atlas NPU推理会话，完全兼容原有接口"""
+    """Atlas NPU推理会话，使用统一的会话管理器"""
     
-    def __init__(self, device_id, model_path):
+    def __init__(self, device_id, model_path, model_name="lane_segmentation"):
         """
         初始化Atlas推理会话
         
         参数：
             device_id: NPU设备ID (通常为0)
             model_path: OM模型路径
+            model_name: 模型名称（用于标识）
         """
         self.device_id = device_id
         self.model_path = model_path
+        self.model_name = model_name
         
         print(f"🧠 使用Atlas NPU设备: {device_id}")
         print(f"📊 加载OM模型: {model_path}")
         
-        # 创建推理会话
-        self.session = InferSession(device_id, model_path)
+        # 获取Atlas会话管理器
+        self.session_manager = get_atlas_session()
+        
+        # 初始化Atlas环境
+        if not self.session_manager.initialize_atlas(device_id):
+            raise RuntimeError("Atlas环境初始化失败")
+        
+        # 加载模型
+        self.model = self.session_manager.load_model(model_name, model_path, device_id)
+        if self.model is None:
+            raise RuntimeError(f"模型加载失败: {model_path}")
         
         print(f"✅ Atlas推理会话初始化完成")
     
     def infer(self, inputs):
         """
-        执行推理，与原有ONNX接口完全一致
+        执行推理，与原有接口完全一致
         
         参数：
             inputs: 输入张量列表
         
         返回：
-            outputs: 输出张量列表
+            outputs: 输出张量列表（已转移到主机内存的numpy数组）
         """
-        input_tensor = inputs[0]
+        input_data = inputs[0]
+        
+        # 转换为Tensor对象
+        input_tensor = create_tensor(input_data)
+        if input_tensor is None:
+            raise RuntimeError("创建输入Tensor失败")
         
         # 执行Atlas推理
-        outputs = self.session.infer([input_tensor])
+        raw_outputs = self.model.infer([input_tensor])
+        
+        # 将输出tensor从NPU转移到主机内存并转换为numpy数组
+        outputs = []
+        for output_tensor in raw_outputs:
+            # 转移到主机内存
+            output_tensor.to_host()
+            # 转换为numpy数组
+            numpy_output = np.array(output_tensor)
+            outputs.append(numpy_output)
         
         return outputs
 

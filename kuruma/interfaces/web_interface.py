@@ -150,6 +150,9 @@ WEB_TEMPLATE = """
         }
         .status-running { background: #4CAF50; }
         .status-stopped { background: #f44336; }
+        .traffic-light-red { background: #FF4444; color: white; }
+        .traffic-light-green { background: #4CAF50; color: white; }
+        .traffic-light-unknown { background: #FFA500; color: white; }
         .log-panel {
             background: #2d2d2d;
             padding: 20px;
@@ -506,6 +509,32 @@ WEB_TEMPLATE = """
             </div>
         </div>
         
+        <div class="control-panel">
+            <h3>🚦 交通灯状态</h3>
+            <div class="control-status">
+                <div class="status-item">
+                    <span class="status-label">交通灯检测:</span>
+                    <span id="traffic-light-detection-status" class="status-value status-disconnected">未启用</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">检测到交通灯:</span>
+                    <span id="traffic-light-detected-status" class="status-value status-stopped">无</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">交通灯状态:</span>
+                    <span id="traffic-light-status" class="status-value">unknown</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">检测置信度:</span>
+                    <span id="traffic-light-confidence" class="status-value">0.0</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">下次检测倒计时:</span>
+                    <span id="traffic-light-countdown" class="status-value">0帧</span>
+                </div>
+            </div>
+        </div>
+        
         <div class="image-panel">
             <h3>🗺️ 实时控制地图</h3>
             <img id="control-map" class="control-map" src="/api/control_map" alt="控制地图加载中...">
@@ -547,6 +576,9 @@ WEB_TEMPLATE = """
                 
                 // 更新避障状态
                 updateAvoidanceStatus(data);
+                
+                // 更新交通灯状态
+                updateTrafficLightStatus(data);
                 
                 // 添加新日志条目
                 if (data.latest_log) {
@@ -637,6 +669,50 @@ WEB_TEMPLATE = """
             // 更新冷却剩余时间
             const cooldownTime = data.avoidance_cooldown_remaining || 0;
             document.getElementById('avoidance-cooldown').textContent = cooldownTime.toFixed(1) + 's';
+        }
+        
+        function updateTrafficLightStatus(data) {
+            // 更新交通灯检测状态
+            const trafficLightDetectionStatus = document.getElementById('traffic-light-detection-status');
+            if (data.traffic_light_detection_enabled) {
+                trafficLightDetectionStatus.textContent = '已启用';
+                trafficLightDetectionStatus.className = 'status-value status-connected';
+            } else {
+                trafficLightDetectionStatus.textContent = '未启用';
+                trafficLightDetectionStatus.className = 'status-value status-disconnected';
+            }
+            
+            // 更新交通灯检测结果
+            const trafficLightDetectedStatus = document.getElementById('traffic-light-detected-status');
+            if (data.traffic_light_detected) {
+                trafficLightDetectedStatus.textContent = '检测到';
+                trafficLightDetectedStatus.className = 'status-value status-driving';
+            } else {
+                trafficLightDetectedStatus.textContent = '无';
+                trafficLightDetectedStatus.className = 'status-value status-stopped';
+            }
+            
+            // 更新交通灯状态
+            const trafficLightStatus = document.getElementById('traffic-light-status');
+            const status = data.traffic_light_status || 'unknown';
+            trafficLightStatus.textContent = status;
+            
+            // 根据交通灯状态设置颜色
+            if (status === 'red') {
+                trafficLightStatus.className = 'status-value traffic-light-red';
+            } else if (status === 'green') {
+                trafficLightStatus.className = 'status-value traffic-light-green';
+            } else {
+                trafficLightStatus.className = 'status-value traffic-light-unknown';
+            }
+            
+            // 更新交通灯检测置信度
+            const confidence = data.traffic_light_confidence || 0.0;
+            document.getElementById('traffic-light-confidence').textContent = confidence.toFixed(2);
+            
+            // 更新下次检测倒计时
+            const countdown = data.traffic_light_countdown || 0;
+            document.getElementById('traffic-light-countdown').textContent = countdown + '帧';
         }
         
         function addLogEntry(logText) {
@@ -903,6 +979,18 @@ def create_web_app():
             stats['state_machine_state'] = web_data.get('state_machine_state', 'unknown')
             stats['state_time'] = web_data.get('state_time', 0.0)
             stats['control_source'] = web_data.get('control_source', 'none')
+            
+            # 添加交通灯检测相关状态
+            stats['traffic_light_detection_enabled'] = web_data.get('traffic_light_detection_enabled', False)
+            stats['traffic_light_detected'] = web_data.get('traffic_light_detected', False)
+            stats['traffic_light_status'] = web_data.get('traffic_light_status', 'unknown')
+            stats['traffic_light_confidence'] = web_data.get('traffic_light_confidence', 0.0)
+            stats['traffic_light_countdown'] = web_data.get('traffic_light_countdown', 0)
+            
+            # 添加防死循环保护相关状态
+            stats['consecutive_avoidance_count'] = web_data.get('consecutive_avoidance_count', 0)
+            stats['avoidance_protection_active'] = web_data.get('avoidance_protection_active', False)
+            stats['avoidance_cooldown_remaining'] = web_data.get('avoidance_cooldown_remaining', 0.0)
         
         return jsonify(stats)
     
